@@ -5,39 +5,77 @@ import path from 'path';
 import {defineConfig} from 'vite';
 import {VitePWA} from 'vite-plugin-pwa';
 
+const ROOT_STATIC_ASSETS: Record<string, string> = {
+  'manifest.json': 'application/manifest+json; charset=utf-8',
+  'icon.svg': 'image/svg+xml',
+  'apple-touch-icon.png': 'image/png',
+  'pwa-192x192.png': 'image/png',
+  'pwa-512x512.png': 'image/png',
+  'pwa-maskable-512x512.png': 'image/png',
+};
+
 export default defineConfig(() => {
   return {
     base: '/',
+    publicDir: false,
     build: {
       outDir: 'dist',
     },
     plugins: [
       react(),
       tailwindcss(),
+      {
+        name: 'serve-and-copy-root-pwa-assets',
+        configureServer(server) {
+          server.middlewares.use((req, res, next) => {
+            const urlPath = (req.url || '').split('?')[0].replace(/^\/+/, '');
+            const contentType = ROOT_STATIC_ASSETS[urlPath];
+            if (!contentType) {
+              next();
+              return;
+            }
+            const filePath = path.resolve(__dirname, urlPath);
+            if (!fs.existsSync(filePath)) {
+              next();
+              return;
+            }
+            res.setHeader('Content-Type', contentType);
+            res.setHeader('Cache-Control', 'no-cache');
+            res.end(fs.readFileSync(filePath));
+          });
+        },
+        closeBundle(error?: Error): void {
+          if (error) {
+            return;
+          }
+          const distDir = path.resolve(__dirname, 'dist');
+          if (!fs.existsSync(distDir)) {
+            return;
+          }
+          for (const filename of Object.keys(ROOT_STATIC_ASSETS)) {
+            const srcFile = path.resolve(__dirname, filename);
+            const destFile = path.resolve(distDir, filename);
+            if (fs.existsSync(srcFile)) {
+              fs.copyFileSync(srcFile, destFile);
+            }
+          }
+        },
+      },
       VitePWA({
         registerType: 'autoUpdate',
         injectRegister: false,
-        useCredentials: true,
-        includeAssets: ['icon.svg', 'apple-touch-icon.png'],
+        useCredentials: false,
         manifest: {
           id: '/',
-          name: 'Tiny Note & APK Signer',
-          short_name: 'Tiny Note',
+          name: 'PersistentUssdCast PWA',
+          short_name: 'UssdCast',
           description:
-            'Offline-capable notepad PWA and Android 11-16 APK v1/v2/v3 signer.',
+            'Zero-APK Installable PWA with Background Keep-Alive & WebRTC Screen Cast.',
           theme_color: '#0f766e',
-          background_color: '#f8fafc',
+          background_color: '#0f172a',
           display: 'standalone',
           start_url: '/',
           scope: '/',
-          share_target: {
-            action: '/note',
-            method: 'GET',
-            params: {
-              title: 'title',
-              text: 'text',
-            },
-          },
           icons: [
             {
               src: '/pwa-192x192.png',
@@ -60,8 +98,8 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
-          navigateFallbackDenylist: [/^\/api\//, /^\/app\//, /^\/i\//, /^\/d\//, /^\/d1\//, /^\/\.well-known\//],
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2,json}'],
+          navigateFallbackDenylist: [/^\/api\//, /^\/\.well-known\//],
           runtimeCaching: [
             {
               urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
@@ -96,7 +134,7 @@ export default defineConfig(() => {
         devOptions: {
           enabled: true,
           type: 'module',
-          navigateFallbackAllowlist: [/^\/$/, /^\/note/, /^\/app1/, /^\/app2/, /^\/t\//, /^\/w/, /^\/a\//],
+          navigateFallbackAllowlist: [/^\/$/],
         },
       }),
       {
@@ -134,24 +172,6 @@ export default defineConfig(() => {
           return guardedCode === code ? null : {code: guardedCode, map: null};
         },
       },
-      // Copies src/assets into dist/ so root-relative URLs like
-      // "/src/assets/images/..." (e.g. generate_image output) still resolve
-      // in production builds. Do not remove.
-      {
-        name: 'copy-unbundled-src-assets',
-        apply: 'build',
-        closeBundle(error?: Error): void {
-          if (error) {
-            return;
-          }
-          const distDir = path.resolve(__dirname, 'dist');
-          const srcAssets = path.resolve(__dirname, 'src/assets');
-          const distAssets = path.resolve(distDir, 'src/assets');
-          if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
-            fs.cpSync(srcAssets, distAssets, {recursive: true, force: true});
-          }
-        },
-      },
     ],
     resolve: {
       alias: {
@@ -159,10 +179,7 @@ export default defineConfig(() => {
       },
     },
     server: {
-      // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
-      // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
     },
   };
