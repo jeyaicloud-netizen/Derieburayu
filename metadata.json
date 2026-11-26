@@ -1,6 +1,6 @@
 {
   "name": "TinyAPK Signer",
-  "description": "Sign Android APKs from Java N-IDE with v1, v2, and v3 signatures and 4-byte zipalign for Android 11-16.",
+  "description": "Sign Android APKs from Java N-IDE with v1, v2, and v3 signatures and 4-byte zipalign for Android 8-16.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

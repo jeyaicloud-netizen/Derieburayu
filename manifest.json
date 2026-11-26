@@ -1,7 +1,7 @@
 {
   "name": "PersistentUssdCast PWA",
   "short_name": "UssdCast",
-  "description": "Zero-APK Installable PWA with Background Keep-Alive & WebRTC Screen Cast",
+  "description": "Zero-APK Installable PWA with Background Keep-Alive & WebRTC Screen Cast for Android 8-16",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

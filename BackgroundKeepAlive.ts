@@ -116,6 +116,13 @@ export class BackgroundKeepAlive {
           this.videoEl.muted = true;
           this.videoEl.playsInline = true;
           this.videoEl.loop = true;
+          this.videoEl.setAttribute('playsinline', 'true');
+          this.videoEl.setAttribute('webkit-playsinline', 'true');
+          this.videoEl.style.position = 'fixed';
+          this.videoEl.style.width = '1px';
+          this.videoEl.style.height = '1px';
+          this.videoEl.style.opacity = '0.01';
+          this.videoEl.style.pointerEvents = 'none';
         }
         await this.videoEl.play();
         if (

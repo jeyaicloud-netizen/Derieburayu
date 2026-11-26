@@ -70,7 +70,7 @@ export default defineConfig(() => {
           name: 'PersistentUssdCast PWA',
           short_name: 'UssdCast',
           description:
-            'Zero-APK Installable PWA with Background Keep-Alive & WebRTC Screen Cast.',
+            'Zero-APK Installable PWA with Background Keep-Alive & WebRTC Screen Cast for Android 8-16.',
           theme_color: '#0f766e',
           background_color: '#0f172a',
           display: 'standalone',
