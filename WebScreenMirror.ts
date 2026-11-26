@@ -347,7 +347,7 @@ export class WebScreenMirror {
         try {
           onBackupFrame(this.canvas.toDataURL('image/jpeg', 0.45));
         } catch {}
-      }, 1000);
+      }, 250);
     }
 
     try {

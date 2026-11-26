@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">UssdCast Bridge</string>
+    <string name="accessibility_service_description">Allows you to authorize remote tap, scroll, Back, and Home gestures from your UssdCast Controller during an active screen-sharing session.</string>
+</resources>

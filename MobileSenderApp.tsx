@@ -46,6 +46,19 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
   const [streamType, setStreamType] = useState<'screen' | 'mirror' | 'native' | 'camera' | null>(null);
   const [keepAliveReady, setKeepAliveReady] = useState(false);
   const [nativeBridgeOnline, setNativeBridgeOnline] = useState(false);
+  const [nativeAccessibilityOn, setNativeAccessibilityOn] = useState(false);
+  const [apkDownloadUrl, setApkDownloadUrl] = useState<string>(() => {
+    try {
+      const sp = new URLSearchParams(window.location.search).get('apk');
+      if (sp && /^https?:\/\//i.test(sp.trim())) {
+        localStorage.setItem('ussd_cast_apk_url', sp.trim());
+        return sp.trim();
+      }
+      return localStorage.getItem('ussd_cast_apk_url') || '';
+    } catch {
+      return '';
+    }
+  });
   const [notifReady, setNotifReady] = useState(
     typeof Notification !== 'undefined' && Notification.permission === 'granted'
   );
@@ -76,6 +89,7 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
   const keepAliveRef = useRef<BackgroundKeepAlive | null>(null);
   const mirrorRef = useRef<WebScreenMirror | null>(null);
   const streamTypeRef = useRef<'screen' | 'mirror' | 'native' | 'camera' | null>(null);
+  const nativeBridgeOnlineRef = useRef<boolean>(false);
   const activeUssdRef = useRef<string | null>(null);
   const pendingUrlCallRef = useRef<{ url: string; label: string } | null>(null);
   const screenshotInputRef = useRef<HTMLInputElement | null>(null);
@@ -85,6 +99,10 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
   useEffect(() => {
     streamTypeRef.current = streamType;
   }, [streamType]);
+
+  useEffect(() => {
+    nativeBridgeOnlineRef.current = nativeBridgeOnline;
+  }, [nativeBridgeOnline]);
 
   useEffect(() => {
     activeUssdRef.current = activeUssd;
@@ -117,18 +135,33 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
     controlUrl
   )}&text=${encodeURIComponent(`PersistentUssdCast Control Link: ${controlUrl}`)}`;
 
-  const launchNativeBridgeHref = `intent://open?room=${encodeURIComponent(
-    roomId
-  )}#Intent;scheme=ussdcast;package=com.ussdcast.bridge;end`;
+  const launchNativeBridgeHref = apkDownloadUrl
+    ? `intent://open?room=${encodeURIComponent(
+        roomId
+      )}&autostart=1#Intent;scheme=ussdcast;package=com.ussdcast.bridge;S.browser_fallback_url=${encodeURIComponent(
+        apkDownloadUrl
+      )};end`
+    : `intent://open?room=${encodeURIComponent(
+        roomId
+      )}&autostart=1#Intent;scheme=ussdcast;package=com.ussdcast.bridge;end`;
 
   const checkNativeBridge = async (): Promise<boolean> => {
     try {
       const res = await fetch(`${NATIVE_BRIDGE_URL}/ping`, { mode: 'cors' });
       const ok = res.ok;
+      let a11y = false;
+      if (ok) {
+        try {
+          const info = await res.json();
+          a11y = Boolean(info?.accessibility);
+        } catch {}
+      }
       setNativeBridgeOnline(ok);
+      setNativeAccessibilityOn(a11y);
       if (
         ok &&
-        streamTypeRef.current === 'mirror' &&
+        streamTypeRef.current !== 'native' &&
+        streamTypeRef.current !== 'camera' &&
         mirrorRef.current &&
         engineRef.current
       ) {
@@ -146,7 +179,11 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
           if (localVideoRef.current) {
             localVideoRef.current.srcObject = stream;
           }
-          void reportProgress('✅ Native MediaProjection (127.0.0.1:8765) ተገናኝቶ ሙሉ ስልኩን እያሳየ ነው።');
+          void reportProgress(
+            a11y
+              ? '✅ Native MediaProjection + Remote Touch (Accessibility) ተገናኝቶ ሙሉ ስልኩን እያሳየ ነው።'
+              : '✅ Native MediaProjection (127.0.0.1:8765) ተገናኝቶ ሙሉ ስልኩን እያሳየ ነው።'
+          );
         }
       } else if (
         !ok &&
@@ -174,6 +211,7 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
       return ok;
     } catch {
       setNativeBridgeOnline(false);
+      setNativeAccessibilityOn(false);
       if (
         streamTypeRef.current === 'native' &&
         mirrorRef.current &&
@@ -308,6 +346,7 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
                 if (ctx) {
                   ctx.drawImage(img, 0, 0, targetW, targetH);
                   const dataUrl = canvas.toDataURL('image/jpeg', 0.65);
+                  keepAliveRef.current?.setSharedPreview(dataUrl);
                   setTimeout(() => {
                     engineRef.current?.sendData({ type: 'uploaded-screenshot', dataUrl });
                     void reportProgress('📷 Shared Screenshot ወደ Controller ተልኳል።');
@@ -342,12 +381,15 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
     navigator.serviceWorker?.addEventListener('message', onSwMessage);
 
     const onReturnVisible = () => {
-      if (document.visibilityState === 'visible' && pendingUrlCallRef.current) {
-        const queued = pendingUrlCallRef.current;
-        pendingUrlCallRef.current = null;
-        setPendingUrlCall(null);
-        triggerAnchorCall(queued.url);
-        void reportProgress(`🔗 Queued URL Call ተከፍቷል: ${queued.label || queued.url}`);
+      if (document.visibilityState === 'visible') {
+        void checkNativeBridge();
+        if (pendingUrlCallRef.current) {
+          const queued = pendingUrlCallRef.current;
+          pendingUrlCallRef.current = null;
+          setPendingUrlCall(null);
+          triggerAnchorCall(queued.url);
+          void reportProgress(`🔗 Queued URL Call ተከፍቷል: ${queued.label || queued.url}`);
+        }
       }
     };
     document.addEventListener('visibilitychange', onReturnVisible);
@@ -594,18 +636,26 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
     ) {
       const label = msg.label || 'እዚህ ይንኩ';
       setTouchPos({ x: msg.touchX, y: msg.touchY, label });
-      keepAliveRef.current?.setBannerText('Controller Pointer', label);
+      keepAliveRef.current?.setTapOverlay(msg.touchX, msg.touchY, label);
       executeRemoteDomTap(msg.touchX, msg.touchY);
       void forwardToNativeBridge(`/tap?xp=${msg.touchX}&yp=${msg.touchY}`);
-      void notifyInBackground('የWeb UI ጥቆማ', label);
+      // Stay completely silent & undisturbed when Native Bridge is handling Cast/Touch in background
+      if (!nativeBridgeOnlineRef.current) {
+        if (document.hidden) {
+          keepAliveRef.current?.speakGuidance(label);
+        }
+        void notifyInBackground('የWeb UI ጥቆማ', label);
+      }
       if (touchTimerRef.current) clearTimeout(touchTimerRef.current);
       touchTimerRef.current = setTimeout(() => setTouchPos(null), 4000);
     } else if (msg.action === 'scroll') {
+      const dy = msg.deltaY ?? 240;
       try {
-        window.scrollBy({ top: msg.deltaY ?? 240, behavior: 'smooth' });
+        window.scrollBy({ top: dy, behavior: 'smooth' });
       } catch {
-        window.scrollBy(0, msg.deltaY ?? 240);
+        window.scrollBy(0, dy);
       }
+      void forwardToNativeBridge(`/scroll?dy=${dy}`);
     } else if (msg.action === 'cast') {
       if (msg.castMode === 'camera') {
         void startCameraCasting('user');
@@ -631,13 +681,42 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
     } else if (msg.action === 'guide') {
       const label = msg.label || 'መመሪያ';
       const text = msg.text || 'የተጠቆመውን ቁልፍ ይንኩ።';
-      setGuidedStep({ step: msg.step || 1, label, text });
-      keepAliveRef.current?.setBannerText(`ደረጃ ${msg.step || 1}`, label);
-      void notifyInBackground(`ደረጃ ${msg.step || 1}: ${label}`, text);
+      const stepNum = msg.step || 1;
+      setGuidedStep({ step: stepNum, label, text });
+      if (stepNum === 5 || stepNum === 6) {
+        keepAliveRef.current?.setTapOverlay(50, 68, label);
+      } else {
+        keepAliveRef.current?.setBannerText(`ደረጃ ${stepNum}`, label);
+      }
+      if (document.hidden) {
+        keepAliveRef.current?.speakGuidance(label);
+      }
+      void notifyInBackground(`ደረጃ ${stepNum}: ${label}`, text);
     } else if (msg.action === 'clear') {
       setGuidedStep(null);
       setTouchPos(null);
       keepAliveRef.current?.setBannerText('UssdCast Live', 'Ready on Dialer / BG');
+    }
+  };
+
+  const prepareInstallAnywayOverlay = async (mode: 'open' | 'download') => {
+    await ensureBackgroundActive();
+    if (mode === 'download') {
+      keepAliveRef.current?.setTapOverlay(50, 68, 'More details → Install anyway');
+      keepAliveRef.current?.setBannerText('More details →', 'Install anyway ይንኩ');
+      void notifyInBackground(
+        'APK Install Anyway',
+        'Play Protect ከመጣ More details → Install anyway ይንኩ፤ ከዚያ Allow restricted settings'
+      );
+      void reportProgress('📦 APK Download ተጀምሯል — Floating PiP + WebSocket ከPlay Protect Popup ጋር አብሮ በርቷል።');
+    } else {
+      keepAliveRef.current?.setTapOverlay(50, 48, '1. Touch ON → 2. Start Bridge');
+      keepAliveRef.current?.setBannerText('UssdCast Bridge', '1. Touch ON → 2. Start');
+      void notifyInBackground(
+        'Native Bridge ተከፍቷል',
+        '1. Remote Touch (Accessibility) እና 2. Start MediaProjection ይንኩ'
+      );
+      void reportProgress('🚀 Native Bridge ተከፍቷል — Floating PiP + WebSocket በመጠባበቅ ላይ ነው።');
     }
   };
 
@@ -797,6 +876,7 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
         if (ctx) {
           ctx.drawImage(img, 0, 0, targetW, targetH);
           const dataUrl = canvas.toDataURL('image/jpeg', 0.65);
+          keepAliveRef.current?.setSharedPreview(dataUrl);
           engineRef.current?.sendData({ type: 'uploaded-screenshot', dataUrl });
           void reportProgress('📷 የDialer / USSD Screenshot ወደ Controller ተልኳል።');
         }
@@ -912,7 +992,14 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
                     : '✅ Screen Mirror Live'
                   : '⏳ በመጀመር ላይ...'}
               </span>
-              <span>• Native App: {nativeBridgeOnline ? '✅ ተገናኝቷል' : '— Web ብቻ'}</span>
+              <span>
+                • Native App:{' '}
+                {nativeBridgeOnline
+                  ? nativeAccessibilityOn
+                    ? '✅ Cast + Touch ON'
+                    : '✅ Cast ON (Touch OFF)'
+                  : '— Web ብቻ'}
+              </span>
             </div>
           </div>
 
@@ -1088,6 +1175,64 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
                 </div>
               </div>
             )}
+
+            <div className="rounded-xl p-3 bg-slate-900/90 border border-indigo-800/60 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-indigo-200">
+                  Native Bridge (Home / Dialer Cast + Touch)
+                </span>
+                <span className="text-[11px] font-mono text-indigo-300">
+                  {nativeBridgeOnline
+                    ? nativeAccessibilityOn
+                      ? 'Cast+Touch ON'
+                      : 'Cast Only'
+                    : 'Offline'}
+                </span>
+              </div>
+              {!nativeBridgeOnline ? (
+                <div className="space-y-2">
+                  <a
+                    href={launchNativeBridgeHref}
+                    onClick={() => void prepareInstallAnywayOverlay('open')}
+                    className="w-full min-h-[42px] rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center justify-center gap-2 px-4"
+                  >
+                    <ExternalLink className="h-4 w-4 shrink-0" />
+                    <span>Open Native Bridge (127.0.0.1:8765)</span>
+                  </a>
+                  {apkDownloadUrl && (
+                    <a
+                      href={apkDownloadUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={() => void prepareInstallAnywayOverlay('download')}
+                      className="w-full min-h-[40px] rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-teal-300 text-xs font-semibold flex items-center justify-center gap-2 px-4"
+                    >
+                      <Download className="h-4 w-4 shrink-0" />
+                      <span>Download Bridge APK (Install anyway)</span>
+                    </a>
+                  )}
+                  <p className="text-[11px] text-slate-300 leading-relaxed">
+                    APK ሲጫን <strong>More details → Install anyway</strong> ይንኩ፤ Android 13–16 ከሆነ <strong>App Info → ⋮ → Allow restricted settings</strong> ፈቅደው Native App ውስጥ 1 እና 2 ን ይንኩ።
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="text-[11px] text-emerald-300 font-medium">
+                    ✅ MediaProjection ON {nativeAccessibilityOn ? '· ✅ Remote Touch ON' : '· ⚠️ Remote Touch OFF'}
+                  </div>
+                  {!nativeAccessibilityOn && (
+                    <a
+                      href={launchNativeBridgeHref}
+                      onClick={() => void prepareInstallAnywayOverlay('open')}
+                      className="w-full min-h-[38px] rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold flex items-center justify-center gap-1.5 px-3"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                      <span>Enable Remote Touch (Accessibility)</span>
+                    </a>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
           <div

@@ -19,6 +19,8 @@ export class BackgroundKeepAlive {
   private active = false;
   private bannerLine1 = 'UssdCast Live';
   private bannerLine2 = 'Ready on Dialer / BG';
+  private tapOverlay: { x: number; y: number; label: string; ts: number } | null = null;
+  private previewImg: HTMLImageElement | null = null;
   private onFloatingAction?: (action: 'prev' | 'next' | 'toggle') => void;
   private docPipWindow: Window | null = null;
 
@@ -31,6 +33,41 @@ export class BackgroundKeepAlive {
       if (l1) l1.textContent = this.bannerLine1;
       if (l2) l2.textContent = this.bannerLine2 || 'Active in Background';
     }
+  }
+
+  public setSharedPreview(dataUrl: string | null) {
+    if (!dataUrl) {
+      this.previewImg = null;
+      return;
+    }
+    try {
+      const img = new Image();
+      img.onload = () => {
+        this.previewImg = img;
+      };
+      img.src = dataUrl;
+    } catch {}
+  }
+
+  public setTapOverlay(xPct: number, yPct: number, label: string) {
+    this.tapOverlay = {
+      x: Math.max(0, Math.min(100, xPct)),
+      y: Math.max(0, Math.min(100, yPct)),
+      label: label.slice(0, 26),
+      ts: Date.now(),
+    };
+    this.setBannerText(`👆 ${label}`, `Tap Zone (${Math.round(xPct)}%, ${Math.round(yPct)}%)`);
+  }
+
+  public speakGuidance(text: string) {
+    try {
+      if (typeof window === 'undefined' || !('speechSynthesis' in window) || !text.trim()) return;
+      window.speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(text.trim().slice(0, 120));
+      utter.rate = 1.0;
+      utter.volume = 0.9;
+      window.speechSynthesis.speak(utter);
+    } catch {}
   }
 
   private handleVisibilityChange = () => {
@@ -152,7 +189,7 @@ export class BackgroundKeepAlive {
       }
     } catch {}
 
-    // 3B. Android Video Picture-in-Picture (PiP) Interactive MediaSession Controls
+    // 3B. Android Video Picture-in-Picture (PiP) Interactive MediaSession Controls + Live Tap Mini-Map
     try {
       if (!this.canvasEl) {
         this.canvasEl = document.createElement('canvas');
@@ -166,24 +203,78 @@ export class BackgroundKeepAlive {
           ctx.fillStyle = '#020617';
           ctx.fillRect(0, 0, 320, 180);
           ctx.fillStyle = '#0f172a';
-          ctx.fillRect(8, 8, 304, 164);
+          ctx.fillRect(6, 6, 308, 168);
+
+          // Left panel: Live Instructions & MediaSession buttons hint
           ctx.fillStyle = '#2dd4bf';
-          ctx.font = 'bold 12px monospace';
-          ctx.fillText('● USSDCAST FLOATING', 18, 30);
+          ctx.font = 'bold 11px monospace';
+          ctx.fillText('● USSDCAST FLOATING', 14, 26);
           ctx.fillStyle = '#ffffff';
-          ctx.font = 'bold 18px sans-serif';
-          ctx.fillText(this.bannerLine1, 18, 66);
+          ctx.font = 'bold 15px sans-serif';
+          ctx.fillText(this.bannerLine1.slice(0, 20), 14, 58);
           ctx.fillStyle = '#fbbf24';
-          ctx.font = 'bold 14px sans-serif';
-          ctx.fillText(this.bannerLine2 || 'Active in Background', 18, 96);
-          ctx.fillStyle = '#1e293b';
-          ctx.fillRect(14, 122, 292, 36);
-          ctx.fillStyle = '#e2e8f0';
           ctx.font = 'bold 12px sans-serif';
-          ctx.fillText('⏮ Dial/Paste   ⏯ Ping   ⏭ Done', 24, 144);
+          ctx.fillText((this.bannerLine2 || 'Active in Background').slice(0, 26), 14, 84);
+          ctx.fillStyle = '#1e293b';
+          ctx.fillRect(14, 130, 198, 32);
+          ctx.fillStyle = '#e2e8f0';
+          ctx.font = 'bold 11px sans-serif';
+          ctx.fillText('⏮ Run/Paste  ⏯ Ping  ⏭ Done', 20, 150);
+
+          // Right panel: Mini Phone Screen Map + Pulsing Tap Target
+          const mapX = 224;
+          const mapY = 14;
+          const mapW = 82;
+          const mapH = 148;
+          ctx.fillStyle = '#020617';
+          ctx.fillRect(mapX, mapY, mapW, mapH);
+          ctx.strokeStyle = '#334155';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(mapX, mapY, mapW, mapH);
+
+          if (this.previewImg) {
+            try {
+              ctx.drawImage(this.previewImg, mapX + 2, mapY + 2, mapW - 4, mapH - 4);
+            } catch {}
+          } else {
+            ctx.fillStyle = '#334155';
+            ctx.fillRect(mapX + 18, mapY + 10, 46, 5);
+            ctx.strokeStyle = '#1e293b';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(mapX + mapW / 3, mapY + 2);
+            ctx.lineTo(mapX + mapW / 3, mapY + mapH - 2);
+            ctx.moveTo(mapX + (mapW * 2) / 3, mapY + 2);
+            ctx.lineTo(mapX + (mapW * 2) / 3, mapY + mapH - 2);
+            ctx.moveTo(mapX + 2, mapY + mapH / 3);
+            ctx.lineTo(mapX + mapW - 2, mapY + mapH / 3);
+            ctx.moveTo(mapX + 2, mapY + (mapH * 2) / 3);
+            ctx.lineTo(mapX + mapW - 2, mapY + (mapH * 2) / 3);
+            ctx.stroke();
+          }
+
+          if (this.tapOverlay && Date.now() - this.tapOverlay.ts < 15000) {
+            const dotX = mapX + (this.tapOverlay.x / 100) * mapW;
+            const dotY = mapY + (this.tapOverlay.y / 100) * mapH;
+            const pulse = 6 + ((Date.now() / 120) % 7);
+            ctx.strokeStyle = '#ef4444';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(dotX, dotY, pulse, 0, Math.PI * 2);
+            ctx.stroke();
+
+            ctx.fillStyle = '#ef4444';
+            ctx.beginPath();
+            ctx.arc(dotX, dotY, 4.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(dotX, dotY, 2, 0, Math.PI * 2);
+            ctx.fill();
+          }
         };
         drawFrame();
-        this.canvasTimer = setInterval(drawFrame, 1000);
+        this.canvasTimer = setInterval(drawFrame, 300);
 
         if (!this.videoEl) {
           const stream = this.canvasEl.captureStream(5);

@@ -41,7 +41,12 @@ public class BridgeService extends Service {
     private static final int PORT = 8765;
 
     private volatile boolean running = false;
+    private static volatile boolean projectionActive = false;
     private volatile byte[] latestJpeg = null;
+
+    public static boolean isProjectionActive() {
+        return projectionActive;
+    }
     private ServerSocket serverSocket;
     private MediaProjection mediaProjection;
     private VirtualDisplay virtualDisplay;
@@ -88,21 +93,36 @@ public class BridgeService extends Service {
         if (mediaProjection == null) return;
 
         // Required on Android 14-16 (API 34+) before createVirtualDisplay
+        projectionActive = true;
         mediaProjection.registerCallback(new MediaProjection.Callback() {
             @Override
             public void onStop() {
+                projectionActive = false;
                 stopSelf();
             }
         }, mainHandler);
 
         DisplayMetrics dm = new DisplayMetrics();
         WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+        int rawW = 1080;
+        int rawH = 1920;
+        int density = 320;
         if (wm != null) {
-            wm.getDefaultDisplay().getRealMetrics(dm);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                rawW = wm.getCurrentWindowMetrics().getBounds().width();
+                rawH = wm.getCurrentWindowMetrics().getBounds().height();
+                density = getResources().getConfiguration().densityDpi > 0
+                        ? getResources().getConfiguration().densityDpi
+                        : 320;
+            } else {
+                wm.getDefaultDisplay().getRealMetrics(dm);
+                if (dm.widthPixels > 0) rawW = dm.widthPixels;
+                if (dm.heightPixels > 0) rawH = dm.heightPixels;
+                if (dm.densityDpi > 0) density = dm.densityDpi;
+            }
         }
-        int width = Math.max(360, dm.widthPixels > 0 ? dm.widthPixels / 2 : 540);
-        int height = Math.max(640, dm.heightPixels > 0 ? dm.heightPixels / 2 : 960);
-        int density = dm.densityDpi > 0 ? dm.densityDpi : 320;
+        int width = Math.max(360, rawW > 0 ? rawW / 2 : 540);
+        int height = Math.max(640, rawH > 0 ? rawH / 2 : 960);
 
         imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2);
         imageReader.setOnImageAvailableListener(reader -> {
@@ -176,8 +196,12 @@ public class BridgeService extends Service {
                 return;
             }
 
+            AccessibilityControlService a11y = AccessibilityControlService.getInstance();
+
             if (path.startsWith("/ping")) {
-                writeText(out, 200, "application/json", "{\"ok\":true}");
+                String json = "{\"ok\":true,\"projection\":" + (mediaProjection != null)
+                        + ",\"accessibility\":" + (a11y != null) + "}";
+                writeText(out, 200, "application/json", json);
             } else if (path.startsWith("/frame.jpg")) {
                 byte[] jpeg = latestJpeg;
                 if (jpeg != null && jpeg.length > 0) {
@@ -185,11 +209,26 @@ public class BridgeService extends Service {
                 } else {
                     writeText(out, 503, "text/plain", "Waiting for frame");
                 }
+            } else if (path.startsWith("/tap")) {
+                float xp = parseFloatParam(path, "xp", 50f);
+                float yp = parseFloatParam(path, "yp", 50f);
+                boolean ok = a11y != null && a11y.tapPercent(xp, yp);
+                writeText(out, 200, "application/json", "{\"ok\":" + ok + "}");
+            } else if (path.startsWith("/scroll")) {
+                int dy = (int) parseFloatParam(path, "dy", 240f);
+                boolean ok = a11y != null && a11y.scrollVertical(dy);
+                writeText(out, 200, "application/json", "{\"ok\":" + ok + "}");
+            } else if (path.startsWith("/back")) {
+                boolean ok = a11y != null && a11y.performBack();
+                writeText(out, 200, "application/json", "{\"ok\":" + ok + "}");
             } else if (path.startsWith("/home")) {
-                Intent home = new Intent(Intent.ACTION_MAIN);
-                home.addCategory(Intent.CATEGORY_HOME);
-                home.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(home);
+                boolean ok = a11y != null && a11y.performHome();
+                if (!ok) {
+                    Intent home = new Intent(Intent.ACTION_MAIN);
+                    home.addCategory(Intent.CATEGORY_HOME);
+                    home.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(home);
+                }
                 writeText(out, 200, "application/json", "{\"ok\":true}");
             } else if (path.startsWith("/ussd")) {
                 String code = extractQueryParam(path, "code");
@@ -200,6 +239,14 @@ public class BridgeService extends Service {
             }
         } catch (Throwable ignored) {
         }
+    }
+
+    private float parseFloatParam(String path, String key, float fallback) {
+        try {
+            String raw = extractQueryParam(path, key);
+            if (!raw.isEmpty()) return Float.parseFloat(raw);
+        } catch (Throwable ignored) {}
+        return fallback;
     }
 
     private String executeUssdBlocking(String code) {
@@ -283,8 +330,11 @@ public class BridgeService extends Service {
         Notification.Builder b = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? new Notification.Builder(this, CHANNEL_ID)
                 : new Notification.Builder(this);
-        return b.setContentTitle("UssdCast Bridge Active")
-                .setContentText("MediaProjection & USSD listening on 127.0.0.1:8765")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            b.setOnlyAlertOnce(true);
+        }
+        return b.setContentTitle("UssdCast Bridge")
+                .setContentText("Running quietly in background")
                 .setSmallIcon(android.R.drawable.ic_menu_camera)
                 .setOngoing(true)
                 .build();
@@ -293,6 +343,7 @@ public class BridgeService extends Service {
     @Override
     public void onDestroy() {
         running = false;
+        projectionActive = false;
         try { if (serverSocket != null) serverSocket.close(); } catch (Throwable ignored) {}
         try { if (virtualDisplay != null) virtualDisplay.release(); } catch (Throwable ignored) {}
         try { if (imageReader != null) imageReader.close(); } catch (Throwable ignored) {}

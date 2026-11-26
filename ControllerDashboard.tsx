@@ -56,13 +56,26 @@ const GUIDE_STEPS = [
     phoneLabel: 'USSD (*804#) ይንኩ',
     phoneText: 'የተጠቆመውን USSD ቁልፍ ነክተው ውጤቱን ይላኩ።',
   },
+  {
+    step: 5,
+    buttonLabel: '5. Native APK (Install anyway)',
+    phoneLabel: 'More details → Install anyway ይንኩ',
+    phoneText: 'Play Protect ከመጣ "More details" ነክተው "Install anyway" ይንኩ (Android 13-16 ላይ Allow restricted settings ይፍቀዱ)።',
+  },
+  {
+    step: 6,
+    buttonLabel: '6. Enable Touch & Projection',
+    phoneLabel: '1. Accessibility ON → 2. Start Bridge',
+    phoneText: 'UssdCast Bridge ውስጥ 1. Remote Touch አብርተው 2. Start MediaProjection ይንኩ።',
+  },
 ];
 
 const POINTER_PRESETS = [
-  'Allow ይንኩ',
-  'Entire screen ይምረጡ',
-  'Install / ጫን ይንኩ',
-  'Continue / ቀጥል',
+  'Install anyway ይንኩ',
+  'More details ይንኩ',
+  'Allow restricted settings',
+  'Allow / Start now ይንኩ',
+  'Call / Send ይንኩ',
   'እዚህ ይንኩ',
 ];
 
@@ -99,6 +112,14 @@ export const ControllerDashboard: React.FC<ControllerDashboardProps> = ({ roomId
     }
   });
 
+  const [apkUrl, setApkUrl] = useState<string>(() => {
+    try {
+      return localStorage.getItem('ussd_cast_apk_url') || '';
+    } catch {
+      return '';
+    }
+  });
+
   const getPublicBaseUrl = () => {
     if (customDomain.trim()) {
       return customDomain.trim().replace(/\/+$/, '');
@@ -111,7 +132,9 @@ export const ControllerDashboard: React.FC<ControllerDashboardProps> = ({ roomId
     return origin;
   };
 
-  const senderUrl = `${getPublicBaseUrl()}/#mode=sender&room=${roomId}`;
+  const senderUrl = `${getPublicBaseUrl()}/${
+    apkUrl.trim() ? `?apk=${encodeURIComponent(apkUrl.trim())}` : ''
+  }#mode=sender&room=${roomId}`;
 
   useEffect(() => {
     TinyAppBridge.setRoomId(roomId);
@@ -237,6 +260,15 @@ export const ControllerDashboard: React.FC<ControllerDashboardProps> = ({ roomId
     if (!busRef.current) return;
     await busRef.current.sendCommand('cast', { castMode }, sendViaDc);
     setRemoteResult((prev) => `Requested ${castMode} stream from phone\n${prev}`);
+  };
+
+  const sendQuickSpot = async (xPct: number, yPct: number, label: string) => {
+    setPointerLabel(label);
+    setLastTap({ x: xPct, y: yPct });
+    setTimeout(() => setLastTap(null), 1500);
+    if (!busRef.current) return;
+    await busRef.current.sendCommand('touch', { touchX: xPct, touchY: yPct, label }, sendViaDc);
+    setRemoteResult((prev) => `PiP Spot Guide (${xPct}%, ${yPct}%): "${label}" sent\n${prev}`);
   };
 
   const handleVideoClick = async (e: React.MouseEvent<HTMLDivElement>) => {
@@ -411,6 +443,41 @@ export const ControllerDashboard: React.FC<ControllerDashboardProps> = ({ roomId
                   placeholder="Custom pointer text..."
                   className="w-full min-h-[40px] bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-teal-500"
                 />
+                <div className="pt-1 border-t border-slate-900 space-y-1.5">
+                  <span className="text-[11px] text-slate-400">
+                    Settings / Popup ላይ ቦታ መጠቆሚያ (1-Tap PiP Spot):
+                  </span>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => void sendQuickSpot(90, 8, 'ላይ ቀኝ ⋮ ይንኩ')}
+                      className="min-h-[34px] px-2 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-[11px] text-teal-300 font-semibold"
+                    >
+                      ↗ ⋮ Top-Right
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void sendQuickSpot(50, 38, 'Allow restricted ይንኩ')}
+                      className="min-h-[34px] px-2 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-[11px] text-teal-300 font-semibold"
+                    >
+                      🔓 Allow Restricted
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void sendQuickSpot(65, 74, 'More details → Install anyway')}
+                      className="min-h-[34px] px-2 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-[11px] text-amber-300 font-semibold"
+                    >
+                      📦 Install Anyway
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void sendQuickSpot(74, 64, 'Allow / Start now ይንኩ')}
+                      className="min-h-[34px] px-2 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-[11px] text-emerald-300 font-semibold"
+                    >
+                      ▶ Start Now / Allow
+                    </button>
+                  </div>
+                </div>
               </div>
 
               <div
@@ -594,6 +661,22 @@ export const ControllerDashboard: React.FC<ControllerDashboardProps> = ({ roomId
                       } catch {}
                     }}
                     placeholder="e.g. https://your-app.vercel.app"
+                    className="flex-1 w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs font-mono text-slate-200 focus:outline-none focus:border-teal-500"
+                  />
+                </div>
+                <div className="flex flex-col sm:flex-row gap-2 items-center">
+                  <span className="text-[11px] text-slate-400 shrink-0">Bridge APK ሊንክ (Install anyway):</span>
+                  <input
+                    type="text"
+                    value={apkUrl}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setApkUrl(val);
+                      try {
+                        localStorage.setItem('ussd_cast_apk_url', val);
+                      } catch {}
+                    }}
+                    placeholder="https://github.com/.../ussdcast-bridge.apk"
                     className="flex-1 w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs font-mono text-slate-200 focus:outline-none focus:border-teal-500"
                   />
                 </div>

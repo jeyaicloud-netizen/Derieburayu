@@ -2,12 +2,14 @@ package com.ussdcast.bridge;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.media.projection.MediaProjectionManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.view.Gravity;
 import android.widget.Button;
 import android.widget.EditText;
@@ -20,7 +22,11 @@ public class MainActivity extends Activity {
     private static final String DEFAULT_PWA_URL = "https://nativeappderieburayu.vercel.app/#mode=sender&room=";
 
     private TextView statusText;
+    private Button a11yBtn;
     private EditText roomInput;
+    private boolean autoFlowArmed = false;
+    private boolean launchedFromWeb = false;
+    private boolean projectionPromptedOnce = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -32,8 +38,7 @@ public class MainActivity extends Activity {
         layout.setPadding(48, 48, 48, 48);
 
         statusText = new TextView(this);
-        statusText.setText("UssdCast Web + MediaProjection Bridge\nAndroid 8-16 | Port 127.0.0.1:8765");
-        statusText.setTextSize(15f);
+        statusText.setTextSize(14f);
         statusText.setPadding(0, 0, 0, 24);
 
         roomInput = new EditText(this);
@@ -41,46 +46,125 @@ public class MainActivity extends Activity {
         roomInput.setText("demo1234");
         roomInput.setSingleLine(true);
 
+        a11yBtn = new Button(this);
+        a11yBtn.setOnClickListener(v -> showAccessibilityDisclosure());
+
+        Button restrictedBtn = new Button(this);
+        restrictedBtn.setText("App Info (Allow restricted settings)");
+        restrictedBtn.setOnClickListener(v -> openAppInfoSettings());
+
         Button startBtn = new Button(this);
-        startBtn.setText("1. Start MediaProjection & USSD Bridge");
-        startBtn.setOnClickListener(v -> requestPermissionsAndProjection());
+        startBtn.setText("2. Start MediaProjection (Background)");
+        startBtn.setOnClickListener(v -> {
+            autoFlowArmed = true;
+            requestPermissionsAndProjection();
+        });
 
         Button openWebBtn = new Button(this);
-        openWebBtn.setText("2. Open Web PWA (Sender)");
+        openWebBtn.setText("3. Open Web PWA (Sender)");
         openWebBtn.setOnClickListener(v -> openSenderPwa());
 
         Button stopBtn = new Button(this);
         stopBtn.setText("Stop Bridge");
         stopBtn.setOnClickListener(v -> {
+            autoFlowArmed = false;
+            projectionPromptedOnce = false;
             stopService(new Intent(this, BridgeService.class));
-            statusText.setText("Bridge Stopped");
+            refreshStatus();
         });
 
         layout.addView(statusText);
         layout.addView(roomInput);
+        layout.addView(a11yBtn);
+        layout.addView(restrictedBtn);
         layout.addView(startBtn);
         layout.addView(openWebBtn);
         layout.addView(stopBtn);
         setContentView(layout);
-        applyDeepLinkRoom(getIntent());
+
+        handleIncomingIntent(getIntent());
+        refreshStatus();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        refreshStatus();
+        // Auto-continue to MediaProjection as soon as Accessibility turns ON
+        if (autoFlowArmed && AccessibilityControlService.isRunning()
+                && !BridgeService.isProjectionActive() && !projectionPromptedOnce) {
+            projectionPromptedOnce = true;
+            requestPermissionsAndProjection();
+        }
     }
 
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        applyDeepLinkRoom(intent);
+        handleIncomingIntent(intent);
     }
 
-    private void applyDeepLinkRoom(Intent intent) {
+    private void handleIncomingIntent(Intent intent) {
         if (intent == null) return;
         Uri data = intent.getData();
         if (data != null && roomInput != null) {
+            launchedFromWeb = true;
             String room = data.getQueryParameter("room");
             if (room != null && !room.trim().isEmpty()) {
                 roomInput.setText(room.trim());
             }
+            if ("1".equals(data.getQueryParameter("autostart"))) {
+                autoFlowArmed = true;
+                if (!AccessibilityControlService.isRunning()) {
+                    showAccessibilityDisclosure();
+                } else if (!BridgeService.isProjectionActive() && !projectionPromptedOnce) {
+                    projectionPromptedOnce = true;
+                    requestPermissionsAndProjection();
+                }
+            }
         }
+    }
+
+    private void refreshStatus() {
+        boolean a11yOn = AccessibilityControlService.isRunning();
+        boolean projOn = BridgeService.isProjectionActive();
+        if (a11yBtn != null) {
+            a11yBtn.setText(a11yOn
+                    ? "1. Remote Touch (Accessibility): ON ✅"
+                    : "1. Enable Remote Touch (Accessibility)");
+        }
+        if (statusText != null) {
+            statusText.setText("UssdCast Background Bridge (Android 8-16)\n"
+                    + "Screen Cast: " + (projOn ? "BACKGROUND ACTIVE" : "OFF") + "\n"
+                    + "Remote Touch (Home/Dialer): " + (a11yOn ? "ACTIVE" : "OFF"));
+        }
+    }
+
+    private void openAppInfoSettings() {
+        Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.fromParts("package", getPackageName(), null));
+        startActivity(i);
+    }
+
+    private void showAccessibilityDisclosure() {
+        if (AccessibilityControlService.isRunning()) {
+            startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Accessibility Disclosure")
+                .setMessage("UssdCast Bridge uses Android AccessibilityService only when you start a session, to perform remote tap, scroll, Back, and Home actions you authorize from your Controller across Dialer, USSD, and Home screens. If disabled on Android 13+, tap 'App Info -> ⋮ -> Allow restricted settings' first.")
+                .setPositiveButton("Open Accessibility", (dialog, which) -> {
+                    autoFlowArmed = true;
+                    startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+                })
+                .setNeutralButton("Allow Restricted (App Info)", (dialog, which) -> {
+                    autoFlowArmed = true;
+                    openAppInfoSettings();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
     private void openSenderPwa() {
@@ -136,8 +220,15 @@ public class MainActivity extends Activity {
             } else {
                 startService(svc);
             }
-            statusText.setText("Bridge Live on http://127.0.0.1:8765\nOpening Web PWA...");
-            openSenderPwa();
+            autoFlowArmed = false;
+            refreshStatus();
+            // Sit quietly in background without covering or disturbing the phone user
+            moveTaskToBack(true);
+            if (launchedFromWeb) {
+                finish();
+            }
+        } else if (requestCode == REQ_MEDIA_PROJECTION) {
+            projectionPromptedOnce = false;
         }
     }
 }
