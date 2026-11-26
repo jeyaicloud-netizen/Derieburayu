@@ -1,42 +1,77 @@
 /**
  * WebRtcEngine.ts
  * Zero-Lag, Anti-Freeze WebRTC Screen Cast via PeerJS Public Cloud & DataChannel
+ * Includes automatic background PeerJS reconnect & stream track end handling.
  */
 
-import { Peer, DataConnection } from 'peerjs';
+import { Peer, DataConnection, MediaConnection } from 'peerjs';
 import { BRIDGE_CONFIG } from './BridgeConfig';
 
 export class WebRtcEngine {
   private peer: Peer | null = null;
   private conn: DataConnection | null = null;
-  private pc: RTCPeerConnection | null = null;
+  private activeCall: MediaConnection | null = null;
   private localStream: MediaStream | null = null;
+  private remoteControllerPeerId: string | null = null;
+  private reconnectTimer: ReturnType<typeof setInterval> | null = null;
+  private destroyed = false;
   private roomId: string;
   private isSender: boolean;
   private onRemoteStream?: (stream: MediaStream) => void;
   private onDataMessage?: (msg: any) => void;
+  private onConnectionChange?: (connected: boolean) => void;
+  private onStreamEnded?: () => void;
 
   constructor(roomId: string, isSender: boolean) {
     this.roomId = roomId;
     this.isSender = isSender;
   }
 
-  public async init(onRemoteStream?: (stream: MediaStream) => void, onDataMessage?: (msg: any) => void) {
+  public async init(
+    onRemoteStream?: (stream: MediaStream) => void,
+    onDataMessage?: (msg: any) => void,
+    onConnectionChange?: (connected: boolean) => void,
+    onStreamEnded?: () => void
+  ) {
     this.onRemoteStream = onRemoteStream;
     this.onDataMessage = onDataMessage;
+    this.onConnectionChange = onConnectionChange;
+    this.onStreamEnded = onStreamEnded;
 
-    const peerId = this.isSender ? `tb-agent-${this.roomId}` : `tb-ctrl-${this.roomId}-${Math.random().toString(36).slice(2, 6)}`;
-    
+    const peerId = this.isSender
+      ? `tb-agent-${this.roomId}`
+      : `tb-ctrl-${this.roomId}-${Math.random().toString(36).slice(2, 6)}`;
+
     this.peer = new Peer(peerId, {
       host: BRIDGE_CONFIG.peerjs.host,
       port: BRIDGE_CONFIG.peerjs.port,
       secure: BRIDGE_CONFIG.peerjs.secure,
-      path: BRIDGE_CONFIG.peerjs.path
+      path: BRIDGE_CONFIG.peerjs.path,
+      config: { iceServers: BRIDGE_CONFIG.iceServers },
     });
 
     this.peer.on('open', () => {
       if (!this.isSender) {
         this.connectToSender();
+        if (this.reconnectTimer) clearInterval(this.reconnectTimer);
+        this.reconnectTimer = setInterval(() => {
+          if (!this.destroyed && (!this.conn || !this.conn.open)) {
+            this.connectToSender();
+          }
+        }, 3000);
+      }
+    });
+
+    this.peer.on('disconnected', () => {
+      this.onConnectionChange?.(false);
+      if (!this.destroyed && this.peer && !this.peer.destroyed) {
+        setTimeout(() => {
+          try {
+            if (!this.destroyed && this.peer?.disconnected) {
+              this.peer.reconnect();
+            }
+          } catch {}
+        }, 1000);
       }
     });
 
@@ -45,51 +80,62 @@ export class WebRtcEngine {
       this.setupDataConnection();
     });
 
-    this.peer.on('call', async (call) => {
-      const constraints = { iceServers: BRIDGE_CONFIG.iceServers };
-      this.pc = new RTCPeerConnection(constraints);
-      
-      this.pc.ontrack = (event) => {
-        if (event.streams && event.streams[0] && this.onRemoteStream) {
-          this.onRemoteStream(event.streams[0]);
-        }
-      };
-
-      call.answer();
+    this.peer.on('call', (call) => {
+      this.activeCall = call;
+      if (this.isSender && this.localStream) {
+        call.answer(this.localStream);
+      } else {
+        call.answer();
+      }
       call.on('stream', (stream) => {
-        if (this.onRemoteStream) this.onRemoteStream(stream);
+        if (this.onRemoteStream) {
+          this.onRemoteStream(stream);
+        }
       });
+    });
+
+    this.peer.on('error', () => {
+      this.onConnectionChange?.(false);
     });
   }
 
   private connectToSender() {
-    if (!this.peer) return;
+    if (!this.peer || this.isSender || this.peer.destroyed) return;
     const senderPeerId = `tb-agent-${this.roomId}`;
-    this.conn = this.peer.connect(senderPeerId);
+    const conn = this.peer.connect(senderPeerId, { reliable: true });
+    this.conn = conn;
     this.setupDataConnection();
-
-    // Also call sender for video stream
-    navigator.mediaDevices?.getUserMedia({ video: true, audio: false }).catch(() => {}).then(() => {
-      const constraints = { iceServers: BRIDGE_CONFIG.iceServers };
-      this.pc = new RTCPeerConnection(constraints);
-      this.pc.ontrack = (event) => {
-        if (event.streams && event.streams[0] && this.onRemoteStream) {
-          this.onRemoteStream(event.streams[0]);
-        }
-      };
-      const call = this.peer?.call(senderPeerId, new MediaStream());
-      call?.on('stream', (stream) => {
-        if (this.onRemoteStream) this.onRemoteStream(stream);
-      });
-    });
   }
 
   private setupDataConnection() {
     if (!this.conn) return;
-    this.conn.on('data', (data: any) => {
+    const currentConn = this.conn;
+
+    currentConn.on('open', () => {
+      this.onConnectionChange?.(true);
+      if (!this.isSender && this.peer?.id) {
+        this.sendData({ type: 'request-stream', peerId: this.peer.id });
+      }
+    });
+
+    currentConn.on('close', () => {
+      this.onConnectionChange?.(false);
+    });
+
+    currentConn.on('data', (data: any) => {
       try {
         const parsed = typeof data === 'string' ? JSON.parse(data) : data;
-        if (this.onDataMessage) this.onDataMessage(parsed);
+        if (parsed?.type === 'request-stream' && typeof parsed.peerId === 'string') {
+          this.remoteControllerPeerId = parsed.peerId;
+          if (this.isSender && this.localStream && this.peer) {
+            this.activeCall?.close();
+            this.activeCall = this.peer.call(parsed.peerId, this.localStream);
+          }
+          return;
+        }
+        if (this.onDataMessage) {
+          this.onDataMessage(parsed);
+        }
       } catch {}
     });
   }
@@ -97,41 +143,69 @@ export class WebRtcEngine {
   public async startCaptureAndOffer(): Promise<MediaStream | null> {
     if (!this.isSender || !this.peer) return null;
     try {
-      const md = navigator.mediaDevices as any;
+      const md = navigator.mediaDevices as MediaDevices & {
+        getDisplayMedia?: (constraints: MediaStreamConstraints) => Promise<MediaStream>;
+      };
       if (md && typeof md.getDisplayMedia === 'function') {
         this.localStream = await md.getDisplayMedia({
-          video: { frameRate: { ideal: 30 }, width: { ideal: 720 }, height: { ideal: 1280 } },
-          audio: false
+          video: {
+            frameRate: { ideal: 30, max: 30 },
+            width: { ideal: 720 },
+            height: { ideal: 1280 },
+          },
+          audio: false,
         });
       }
 
-      if (this.localStream && this.peer) {
-        // Listen for incoming calls to stream video
-        this.peer.on('call', (call) => {
-          call.answer(this.localStream!);
-        });
+      if (this.localStream) {
+        const [videoTrack] = this.localStream.getVideoTracks();
+        if (videoTrack) {
+          videoTrack.onended = () => {
+            this.localStream = null;
+            this.onStreamEnded?.();
+          };
+        }
+        if (this.peer && this.remoteControllerPeerId) {
+          this.activeCall?.close();
+          this.activeCall = this.peer.call(this.remoteControllerPeerId, this.localStream);
+        }
       }
 
       return this.localStream;
-    } catch (e) {
+    } catch {
       return null;
     }
   }
 
-  public sendData(data: any) {
+  public sendData(data: any): boolean {
     if (this.conn && this.conn.open) {
       try {
         this.conn.send(JSON.stringify(data));
-      } catch {}
+        return true;
+      } catch {
+        return false;
+      }
     }
+    return false;
   }
 
   public destroy() {
+    this.destroyed = true;
+    if (this.reconnectTimer) {
+      clearInterval(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.activeCall) {
+      this.activeCall.close();
+      this.activeCall = null;
+    }
     if (this.localStream) {
       this.localStream.getTracks().forEach((t) => t.stop());
+      this.localStream = null;
     }
     if (this.peer) {
       this.peer.destroy();
+      this.peer = null;
     }
   }
 }
