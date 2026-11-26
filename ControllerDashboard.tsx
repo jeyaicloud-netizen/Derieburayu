@@ -7,7 +7,9 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  ArrowDown,
   ArrowLeft,
+  ArrowUp,
   Check,
   Copy,
   Eraser,
@@ -16,9 +18,9 @@ import {
   Home,
   Monitor,
   Play,
+  RefreshCw,
   Send,
   Smartphone,
-  Square,
 } from 'lucide-react';
 import { WebRtcEngine } from './WebRtcEngine';
 import { ReliableCommandBus } from './ReliableCommandBus';
@@ -70,6 +72,7 @@ export const ControllerDashboard: React.FC<ControllerDashboardProps> = ({ roomId
   const [pointerLabel, setPointerLabel] = useState('Allow ይንኩ');
   const [activeStep, setActiveStep] = useState<number | null>(null);
   const [hasStream, setHasStream] = useState(false);
+  const [fallbackFrameUrl, setFallbackFrameUrl] = useState<string | null>(null);
   const [peerConnected, setPeerConnected] = useState(false);
   const [copied, setCopied] = useState(false);
   const [lastTap, setLastTap] = useState<{ x: number; y: number } | null>(null);
@@ -79,6 +82,7 @@ export const ControllerDashboard: React.FC<ControllerDashboardProps> = ({ roomId
   const [tinyNotes, setTinyNotes] = useState<string>('');
 
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const fallbackImgRef = useRef<HTMLImageElement | null>(null);
   const engineRef = useRef<WebRtcEngine | null>(null);
   const busRef = useRef<ReliableCommandBus | null>(null);
 
@@ -129,6 +133,7 @@ export const ControllerDashboard: React.FC<ControllerDashboardProps> = ({ roomId
       (stream) => {
         if (remoteVideoRef.current) {
           remoteVideoRef.current.srcObject = stream;
+          void remoteVideoRef.current.play().catch(() => {});
         }
         setHasStream(true);
         setRemoteResult((prev) => `Live screen stream connected!\n${prev}`);
@@ -138,6 +143,10 @@ export const ControllerDashboard: React.FC<ControllerDashboardProps> = ({ roomId
       },
       (connected) => {
         setPeerConnected(connected);
+      },
+      undefined,
+      (dataUrl) => {
+        setFallbackFrameUrl(dataUrl);
       }
     );
 
@@ -201,11 +210,80 @@ export const ControllerDashboard: React.FC<ControllerDashboardProps> = ({ roomId
     setRemoteResult((prev) => `Sent USSD ${ussdCode.trim()} to phone\n${prev}`);
   };
 
+  const sendScrollCommand = async (deltaY: number) => {
+    if (!busRef.current) return;
+    await busRef.current.sendCommand('scroll', { deltaY }, sendViaDc);
+  };
+
+  const requestCastRefresh = async (castMode: 'auto' | 'camera' = 'auto') => {
+    if (!busRef.current) return;
+    await busRef.current.sendCommand('cast', { castMode }, sendViaDc);
+    setRemoteResult((prev) => `Requested ${castMode} stream from phone\n${prev}`);
+  };
+
   const handleVideoClick = async (e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = Math.max(0, Math.min(100, Math.round(((e.clientX - rect.left) / rect.width) * 100)));
-    const y = Math.max(0, Math.min(100, Math.round(((e.clientY - rect.top) / rect.height) * 100)));
-    setLastTap({ x, y });
+    const containerRect = e.currentTarget.getBoundingClientRect();
+    let mediaRect = {
+      left: containerRect.left,
+      top: containerRect.top,
+      width: containerRect.width,
+      height: containerRect.height,
+    };
+
+    const vid = remoteVideoRef.current;
+    const img = fallbackImgRef.current;
+    const mediaW =
+      hasStream && vid && vid.videoWidth > 0
+        ? vid.videoWidth
+        : img && img.naturalWidth > 0
+        ? img.naturalWidth
+        : 0;
+    const mediaH =
+      hasStream && vid && vid.videoHeight > 0
+        ? vid.videoHeight
+        : img && img.naturalHeight > 0
+        ? img.naturalHeight
+        : 0;
+
+    if (mediaW > 0 && mediaH > 0) {
+      const containerRatio = containerRect.width / containerRect.height;
+      const mediaRatio = mediaW / mediaH;
+      if (mediaRatio > containerRatio) {
+        const renderedH = containerRect.width / mediaRatio;
+        mediaRect = {
+          left: containerRect.left,
+          top: containerRect.top + (containerRect.height - renderedH) / 2,
+          width: containerRect.width,
+          height: renderedH,
+        };
+      } else {
+        const renderedW = containerRect.height * mediaRatio;
+        mediaRect = {
+          left: containerRect.left + (containerRect.width - renderedW) / 2,
+          top: containerRect.top,
+          width: renderedW,
+          height: containerRect.height,
+        };
+      }
+    }
+
+    const x = Math.max(
+      0,
+      Math.min(100, Math.round(((e.clientX - mediaRect.left) / mediaRect.width) * 100))
+    );
+    const y = Math.max(
+      0,
+      Math.min(100, Math.round(((e.clientY - mediaRect.top) / mediaRect.height) * 100))
+    );
+    const dotX = Math.max(
+      0,
+      Math.min(100, Math.round(((e.clientX - containerRect.left) / containerRect.width) * 100))
+    );
+    const dotY = Math.max(
+      0,
+      Math.min(100, Math.round(((e.clientY - containerRect.top) / containerRect.height) * 100))
+    );
+    setLastTap({ x: dotX, y: dotY });
     setTimeout(() => setLastTap(null), 1500);
 
     if (busRef.current) {
@@ -215,7 +293,7 @@ export const ControllerDashboard: React.FC<ControllerDashboardProps> = ({ roomId
         sendViaDc
       );
       setRemoteResult(
-        (prev) => `Tap/Pointer (${x}%, ${y}%) "${pointerLabel || 'እዚህ ይንኩ'}" sent\n${prev}`
+        (prev) => `Tap/Click (${x}%, ${y}%) "${pointerLabel || 'እዚህ ይንኩ'}" sent\n${prev}`
       );
     }
   };
@@ -320,14 +398,28 @@ export const ControllerDashboard: React.FC<ControllerDashboardProps> = ({ roomId
               <div
                 onClick={handleVideoClick}
                 className="bg-slate-950 rounded-2xl border border-slate-800 aspect-[9/16] max-h-[540px] w-full relative overflow-hidden flex items-center justify-center cursor-crosshair select-none"
-                title="Click anywhere to project pointer & execute native tap on phone"
+                title="Click anywhere on the cast screen to tap on the phone"
               >
                 <video
                   ref={remoteVideoRef}
                   autoPlay
+                  muted
                   playsInline
-                  className="w-full h-full object-contain"
+                  className={`w-full h-full object-contain ${hasStream ? 'block' : 'hidden'}`}
                 />
+                {!hasStream && fallbackFrameUrl && (
+                  <img
+                    ref={fallbackImgRef}
+                    src={fallbackFrameUrl}
+                    alt="Live phone screen mirror"
+                    className="w-full h-full object-contain"
+                  />
+                )}
+                {(hasStream || fallbackFrameUrl) && (
+                  <span className="absolute top-3 left-3 bg-emerald-600/90 text-white text-[11px] font-bold px-2.5 py-1 rounded-md pointer-events-none shadow">
+                    ● LIVE CAST (ይንኩት)
+                  </span>
+                )}
                 {lastTap && (
                   <div
                     className="absolute w-10 h-10 rounded-full border-2 border-red-400 bg-red-500/30 pointer-events-none animate-ping"
@@ -338,21 +430,50 @@ export const ControllerDashboard: React.FC<ControllerDashboardProps> = ({ roomId
                     }}
                   />
                 )}
-                {!hasStream && (
+                {!hasStream && !fallbackFrameUrl && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-slate-400 bg-slate-950/90 p-6 text-center pointer-events-none">
-                    <Smartphone className="h-11 w-11 text-slate-500" />
-                    <p className="text-sm max-w-sm leading-relaxed">
-                      ከታች ያለውን Mobile Sender ሊንክ በስልኩ ከከፈቱ በኋላ ቀጥታ የስልኩ ስክሪን እዚህ ይታያል። የትኛውም ቦታ ሲነኩ በPWA እና በNative AutoClickService ይነካል።
-                    </p>
+                    <Smartphone className="h-10 w-10 text-teal-400" />
+                    <div className="space-y-1.5 max-w-sm">
+                      <p className="text-sm font-semibold text-slate-200">
+                        የቀጥታ ስክሪን ካስት (Live Screen Cast) ይጠብቃል
+                      </p>
+                      <p className="text-xs text-slate-400 leading-relaxed">
+                        ከታች ያለውን ሊንክ በስልኩ ላይ ሲከፍቱት ወዲያውኑ 0% Play Protect Live Screen Mirror እዚህ ይታያል፤ ከዚያ እዚህ ላይ ሲነኩ ስልኩ ላይ በቀጥታ ይነካል።
+                      </p>
+                    </div>
                   </div>
                 )}
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+                <button
+                  type="button"
+                  onClick={() => sendScrollCommand(-260)}
+                  className="min-h-[42px] bg-slate-950 hover:bg-slate-800 border border-slate-800 rounded-xl text-xs font-semibold text-slate-200 flex items-center justify-center gap-1"
+                >
+                  <ArrowUp className="h-4 w-4" />
+                  <span>Up</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => sendScrollCommand(260)}
+                  className="min-h-[42px] bg-slate-950 hover:bg-slate-800 border border-slate-800 rounded-xl text-xs font-semibold text-slate-200 flex items-center justify-center gap-1"
+                >
+                  <ArrowDown className="h-4 w-4" />
+                  <span>Down</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => requestCastRefresh('auto')}
+                  className="min-h-[42px] bg-teal-700 hover:bg-teal-600 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-1"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  <span>Cast</span>
+                </button>
                 <button
                   type="button"
                   onClick={() => sendNativeAction('back')}
-                  className="min-h-[44px] bg-slate-950 hover:bg-slate-800 border border-slate-800 rounded-xl text-xs font-semibold text-slate-200 flex items-center justify-center gap-1.5"
+                  className="min-h-[42px] bg-slate-950 hover:bg-slate-800 border border-slate-800 rounded-xl text-xs font-semibold text-slate-200 flex items-center justify-center gap-1"
                 >
                   <ArrowLeft className="h-4 w-4" />
                   <span>Back</span>
@@ -360,26 +481,18 @@ export const ControllerDashboard: React.FC<ControllerDashboardProps> = ({ roomId
                 <button
                   type="button"
                   onClick={() => sendNativeAction('home')}
-                  className="min-h-[44px] bg-slate-950 hover:bg-slate-800 border border-slate-800 rounded-xl text-xs font-semibold text-slate-200 flex items-center justify-center gap-1.5"
+                  className="min-h-[42px] bg-slate-950 hover:bg-slate-800 border border-slate-800 rounded-xl text-xs font-semibold text-slate-200 flex items-center justify-center gap-1"
                 >
                   <Home className="h-4 w-4" />
                   <span>Home</span>
                 </button>
                 <button
                   type="button"
-                  onClick={() => sendNativeAction('autoclick', true)}
-                  className="min-h-[44px] bg-emerald-700 hover:bg-emerald-600 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-1.5"
+                  onClick={() => sendNativeAction('autoclick', !hasStream)}
+                  className="min-h-[42px] bg-emerald-700 hover:bg-emerald-600 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-1"
                 >
-                  <Play className="h-4 w-4" />
-                  <span>AutoClick On</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => sendNativeAction('autoclick', false)}
-                  className="min-h-[44px] bg-red-700 hover:bg-red-600 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-1.5"
-                >
-                  <Square className="h-4 w-4" />
-                  <span>AutoClick Off</span>
+                  <Play className="h-3.5 w-3.5" />
+                  <span>Tap</span>
                 </button>
               </div>
 

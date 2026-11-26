@@ -17,6 +17,7 @@ export interface BridgeMessage {
     | 'back'
     | 'autoclick'
     | 'touch'
+    | 'scroll'
     | 'guide'
     | 'ack';
   text?: string;
@@ -26,6 +27,8 @@ export interface BridgeMessage {
   enabled?: boolean;
   touchX?: number;
   touchY?: number;
+  deltaY?: number;
+  castMode?: 'auto' | 'screen' | 'mirror' | 'camera' | 'native';
   status?: string;
   screenshotUrl?: string;
   ts: number;

@@ -6,6 +6,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  Camera,
   CheckCircle2,
   Download,
   ExternalLink,
@@ -19,6 +20,7 @@ import {
 import { WebRtcEngine } from './WebRtcEngine';
 import { ReliableCommandBus } from './ReliableCommandBus';
 import { BackgroundKeepAlive } from './BackgroundKeepAlive';
+import { WebScreenMirror } from './WebScreenMirror';
 import { BridgeMessage } from './types';
 
 interface MobileSenderAppProps {
@@ -41,6 +43,7 @@ const NATIVE_BRIDGE_URL = 'http://127.0.0.1:8765';
 
 export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
   const [casting, setCasting] = useState(false);
+  const [streamType, setStreamType] = useState<'screen' | 'mirror' | 'native' | 'camera' | null>(null);
   const [keepAliveReady, setKeepAliveReady] = useState(false);
   const [nativeBridgeOnline, setNativeBridgeOnline] = useState(false);
   const [notifReady, setNotifReady] = useState(
@@ -66,6 +69,7 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
   const engineRef = useRef<WebRtcEngine | null>(null);
   const busRef = useRef<ReliableCommandBus | null>(null);
   const keepAliveRef = useRef<BackgroundKeepAlive | null>(null);
+  const mirrorRef = useRef<WebScreenMirror | null>(null);
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const touchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -153,6 +157,9 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
     const keepAlive = new BackgroundKeepAlive();
     keepAliveRef.current = keepAlive;
 
+    const mirror = new WebScreenMirror();
+    mirrorRef.current = mirror;
+
     const bus = new ReliableCommandBus(roomId, (msg) => handleCommand(msg));
     bus.startListening();
     busRef.current = bus;
@@ -164,18 +171,30 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
       (msg) => {
         bus.handleIncomingMessage(msg, false);
       },
-      undefined,
+      (connected) => {
+        if (connected) {
+          void reportProgress('🔗 ስልኩ ከController ጋር በቀጥታ ተገናኝቷል (Screen Mirror Active)።');
+        }
+      },
       () => {
         setCasting(false);
+        setStreamType(null);
         setStatusNotice('Screen Cast ተቋርጧል — እንደገና ለመጀመር "Start Screen Cast" ይንኩ።');
       }
     );
 
+    // Auto-start 0%-PlayProtect Live Screen Mirror so Controller sees the phone screen immediately
+    const autoCastTimer = setTimeout(() => {
+      void startMirrorStream(true);
+    }, 600);
+
     return () => {
+      clearTimeout(autoCastTimer);
       window.removeEventListener('beforeinstallprompt', onBeforeInstall);
       window.removeEventListener('appinstalled', onInstalled);
       clearInterval(bridgePoll);
       if (touchTimerRef.current) clearTimeout(touchTimerRef.current);
+      mirror.stop();
       engine.destroy();
       bus.destroy();
       keepAlive.destroy();
@@ -228,6 +247,45 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
     }
   };
 
+  const executeRemoteDomTap = (xPct: number, yPct: number) => {
+    const vw = window.innerWidth || 390;
+    const vh = window.innerHeight || 844;
+    const clientX = Math.max(1, Math.min(vw - 1, (xPct / 100) * vw));
+    const clientY = Math.max(1, Math.min(vh - 1, (yPct / 100) * vh));
+
+    try {
+      const hit = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+      const target =
+        (hit?.closest('button, a, input, textarea, [role="button"]') as HTMLElement | null) || hit;
+
+      if (
+        target &&
+        target !== document.body &&
+        target !== document.documentElement &&
+        target.dataset.mirrorIgnore !== 'true'
+      ) {
+        const prevOutline = target.style.outline;
+        target.style.outline = '2px solid #2dd4bf';
+        setTimeout(() => {
+          target.style.outline = prevOutline;
+        }, 550);
+
+        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+          target.focus();
+        }
+        target.click();
+        const tagText =
+          (target.innerText || (target as HTMLInputElement).placeholder || target.tagName)
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 32);
+        void reportProgress(`👆 Remote Tap (${xPct}%, ${yPct}%) -> "${tagText}"`);
+        return;
+      }
+    } catch {}
+    void reportProgress(`👆 Pointer (${xPct}%, ${yPct}%) ተነክቷል።`);
+  };
+
   const handleCommand = (msg: BridgeMessage) => {
     if (!msg || !msg.action) return;
 
@@ -242,10 +300,25 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
     ) {
       const label = msg.label || 'እዚህ ይንኩ';
       setTouchPos({ x: msg.touchX, y: msg.touchY, label });
+      executeRemoteDomTap(msg.touchX, msg.touchY);
       void forwardToNativeBridge(`/tap?xp=${msg.touchX}&yp=${msg.touchY}`);
       void notifyInBackground('የWeb UI ጥቆማ', label);
       if (touchTimerRef.current) clearTimeout(touchTimerRef.current);
-      touchTimerRef.current = setTimeout(() => setTouchPos(null), 5000);
+      touchTimerRef.current = setTimeout(() => setTouchPos(null), 4000);
+    } else if (msg.action === 'scroll') {
+      try {
+        window.scrollBy({ top: msg.deltaY ?? 240, behavior: 'smooth' });
+      } catch {
+        window.scrollBy(0, msg.deltaY ?? 240);
+      }
+    } else if (msg.action === 'cast') {
+      if (msg.castMode === 'camera') {
+        void startCameraCasting('user');
+      } else {
+        void startMirrorStream(false);
+      }
+    } else if (msg.action === 'edit' && msg.text !== undefined) {
+      setUssdReplyText(msg.text);
     } else if (msg.action === 'back') {
       void forwardToNativeBridge('/back');
     } else if (msg.action === 'home') {
@@ -300,36 +373,89 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
     void reportProgress(`📞 USSD ${code} ተጀምሯል።`);
   };
 
-  const startCasting = async () => {
-    if (!engineRef.current) return;
-    await ensureBackgroundActive();
-    const stream = await engineRef.current.startCaptureAndOffer();
+  const startMirrorStream = async (silent = false) => {
+    if (!engineRef.current || !mirrorRef.current) return;
+    const isNativeOk = await checkNativeBridge();
+    const sendFrameFallback = (dataUrl: string) => {
+      engineRef.current?.sendMirrorFrame(dataUrl);
+    };
+
+    const stream = isNativeOk
+      ? mirrorRef.current.startNativeBridgeMirror(NATIVE_BRIDGE_URL, sendFrameFallback)
+      : mirrorRef.current.startDomMirror('[data-mirror-root="true"]', sendFrameFallback);
+
     if (stream) {
+      engineRef.current.startProvidedStreamOffer(stream);
+      const mode = isNativeOk ? 'native' : 'mirror';
       setCasting(true);
+      setStreamType(mode);
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
       }
-      await reportProgress('✅ Step 2: Screen Cast Allow ተፈቅዶ በቀጥታ እየተላለፈ ነው።');
-    } else {
-      setStatusNotice(
-        supportsScreenCast
-          ? 'የScreen Cast ፍቃድ አልተሰጠም — በድጋሚ ነክተው Allow ይንኩ።'
-          : 'ይህ Browser Screen Cast አይደግፍም፤ ነገር ግን USSD፣ Background Keep-Alive እና Touch Pointer በመደበኛው ይሰራሉ።'
-      );
+      if (!silent) {
+        await reportProgress(
+          isNativeOk
+            ? '✅ Native MediaProjection Screen Cast (127.0.0.1:8765) ተጀምሯል።'
+            : '✅ Live Interactive Screen Cast (0% Play Protect Mirror) ወደ Controller እየተላለፈ ነው።'
+        );
+      }
     }
+  };
+
+  const startCasting = async () => {
+    if (!engineRef.current) return;
+    await ensureBackgroundActive();
+
+    // 1. Try native browser OS screen cast if browser supports getDisplayMedia
+    if (supportsScreenCast) {
+      mirrorRef.current?.stop();
+      const osStream = await engineRef.current.startCaptureAndOffer();
+      if (osStream) {
+        setCasting(true);
+        setStreamType('screen');
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = osStream;
+        }
+        await reportProgress('✅ Step 2: OS Screen Cast Allow ተፈቅዶ በቀጥታ እየተላለፈ ነው።');
+        return;
+      }
+    }
+
+    // 2. Fallback / Android Chrome 0% Play Protect Screen Mirror or Localhost MediaProjection
+    await startMirrorStream(false);
+  };
+
+  const startCameraCasting = async (facing: 'user' | 'environment' = 'user') => {
+    if (!engineRef.current) return;
+    await ensureBackgroundActive();
+    mirrorRef.current?.stop();
+    const stream = await engineRef.current.startCameraCaptureAndOffer(facing);
+    if (stream) {
+      setCasting(true);
+      setStreamType('camera');
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+      }
+      await reportProgress('✅ Step 2: Camera Stream ተፈቅዶ የቀጥታ ቪዲዮ እየተላለፈ ነው።');
+    } else {
+      setStatusNotice('የካሜራ ፍቃድ አልተሰጠም — በብሮውዘሩ ላይ Camera Allow ይንኩ።');
+    }
+  };
+
+  const stopCasting = () => {
+    mirrorRef.current?.stop();
+    engineRef.current?.stopLocalStream();
+    setCasting(false);
+    setStreamType(null);
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = null;
+    }
+    void reportProgress('⏹️ የቀጥታ ቪዲዮ ተቋርጧል።');
   };
 
   const requestAllPermissionsAndStart = async () => {
     await ensureBackgroundActive();
-    if (supportsScreenCast && !casting) {
-      await startCasting();
-    } else {
-      await reportProgress(
-        '✅ የሚፈቀዱት የWeb ፍቃዶች (Notifications + Keep-Alive' +
-          (casting ? ' + Screen Cast' : '') +
-          ') ተጀምረዋል።'
-      );
-    }
+    await startCasting();
   };
 
   const sendUssdReply = async () => {
@@ -345,6 +471,7 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
 
   return (
     <div
+      data-mirror-root="true"
       className="min-h-screen bg-slate-950 text-slate-100 p-4 sm:p-6 flex flex-col items-center relative overflow-x-hidden"
       onClick={() => {
         if (touchPos) setTouchPos(null);
@@ -352,6 +479,8 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
     >
       {touchPos && (
         <div
+          data-remote-pointer="true"
+          data-mirror-ignore="true"
           className="fixed z-50 pointer-events-none flex flex-col items-center"
           style={{
             left: `${touchPos.x}%`,
@@ -429,10 +558,14 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
               <span>
                 • Screen Cast:{' '}
                 {casting
-                  ? '✅ በርቷል'
-                  : supportsScreenCast
-                  ? '⏳ ይጠብቃል'
-                  : '— በዚህ Browser የለም'}
+                  ? streamType === 'screen'
+                    ? '✅ OS Screen Live'
+                    : streamType === 'native'
+                    ? '✅ Native MediaProjection'
+                    : streamType === 'camera'
+                    ? '✅ Camera Live'
+                    : '✅ Screen Mirror Live'
+                  : '⏳ በመጀመር ላይ...'}
               </span>
               <span>• Native App: {nativeBridgeOnline ? '✅ ተገናኝቷል' : '— Web ብቻ'}</span>
             </div>
@@ -498,34 +631,99 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
                 : 'border-slate-800 bg-slate-950'
             }`}
           >
-            <div className="text-xs font-semibold text-slate-200">
-              ደረጃ 2: Screen Cast እና Allow ፍቃድ
-            </div>
-            {!supportsScreenCast ? (
-              <p className="text-xs text-slate-400 leading-relaxed">
-                ይህ Browser Screen Cast (`getDisplayMedia`) አያቀርብም፤ ነገር ግን USSD፣ Background Keep-Alive፣ Notifications እና የWeb UI ቀይ ጠቋሚ ሙሉ በሙሉ ይሰራሉ። (Screen Cast ከፈለጉ በSamsung Internet / Edge / Brave ይክፈቱ።)
-              </p>
-            ) : !casting ? (
-              <button
-                type="button"
-                onClick={startCasting}
-                className="w-full min-h-[48px] rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold flex items-center justify-center gap-2 px-4"
-              >
-                <Play className="h-5 w-5 shrink-0" />
-                <span>Start Screen Cast (Allow ይንኩ)</span>
-              </button>
-            ) : (
-              <div className="relative rounded-xl overflow-hidden bg-black aspect-[9/16] max-h-[240px] border border-slate-800 flex items-center justify-center">
-                <video
-                  ref={localVideoRef}
-                  autoPlay
-                  muted
-                  playsInline
-                  className="w-full h-full object-contain"
-                />
-                <span className="absolute top-2.5 left-2.5 bg-red-600/90 text-white text-[11px] font-bold px-2.5 py-1 rounded-md">
-                  Streaming Active
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-slate-200">
+                ደረጃ 2: Screen Cast እና Allow ፍቃድ
+              </span>
+              {casting && (
+                <span className="text-[11px] font-bold text-emerald-400">
+                  ● LIVE (
+                  {streamType === 'screen'
+                    ? 'OS Screen'
+                    : streamType === 'native'
+                    ? 'MediaProjection'
+                    : streamType === 'camera'
+                    ? 'Camera'
+                    : '0% PP Mirror'}
+                  )
                 </span>
+              )}
+            </div>
+
+            {!casting ? (
+              <div className="space-y-3">
+                <button
+                  type="button"
+                  onClick={startCasting}
+                  className="w-full min-h-[48px] rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold flex items-center justify-center gap-2 px-4 shadow-lg shadow-emerald-950/40"
+                >
+                  <Play className="h-5 w-5 shrink-0" />
+                  <span>Start Screen Cast (Allow ይንኩ)</span>
+                </button>
+
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void startCameraCasting('user')}
+                    className="flex-1 min-h-[44px] rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold flex items-center justify-center gap-2 px-4"
+                  >
+                    <Camera className="h-4 w-4 shrink-0" />
+                    <span>📷 Camera Stream</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void startCameraCasting('environment')}
+                    className="min-h-[44px] rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold px-3.5 flex items-center justify-center"
+                  >
+                    <span>የጀርባ ካሜራ</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {streamType === 'mirror' ? (
+                  <div className="rounded-xl p-3 bg-emerald-950/40 border border-emerald-800/70 space-y-1">
+                    <p className="text-xs font-semibold text-emerald-300">
+                      ✅ Live Interactive Screen Cast እየተላለፈ ነው
+                    </p>
+                    <p className="text-[11px] text-slate-300 leading-relaxed">
+                      Controller ላይ ይህ ስክሪን በቀጥታ እየታየ ነው፤ Controller ሲነካ እዚህ ስልክ ላይ ቁልፎች በቀጥታ ይነካሉ።
+                    </p>
+                  </div>
+                ) : (
+                  <div className="relative rounded-xl overflow-hidden bg-black aspect-[9/16] max-h-[240px] border border-slate-800 flex items-center justify-center">
+                    <video
+                      ref={localVideoRef}
+                      autoPlay
+                      muted
+                      playsInline
+                      className="w-full h-full object-contain"
+                    />
+                    <span className="absolute top-2.5 left-2.5 bg-red-600/90 text-white text-[11px] font-bold px-2.5 py-1 rounded-md shadow">
+                      Streaming {streamType === 'camera' ? 'Camera' : 'MediaProjection'} Active
+                    </span>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      streamType === 'camera' ? void startMirrorStream(false) : void startCameraCasting('user')
+                    }
+                    className="min-h-[40px] rounded-xl bg-slate-800 hover:bg-slate-700 text-teal-300 text-xs font-semibold flex items-center justify-center gap-1.5 px-3"
+                  >
+                    <Camera className="h-3.5 w-3.5 shrink-0" />
+                    <span>{streamType === 'camera' ? 'Screen Mirror' : 'Camera Mode'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={stopCasting}
+                    className="min-h-[40px] rounded-xl bg-slate-800 hover:bg-slate-700 text-rose-300 text-xs font-semibold flex items-center justify-center gap-1.5 px-3"
+                  >
+                    <span>Stop Cast</span>
+                  </button>
+                </div>
               </div>
             )}
           </div>

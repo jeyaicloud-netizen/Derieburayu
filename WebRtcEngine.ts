@@ -21,6 +21,7 @@ export class WebRtcEngine {
   private onDataMessage?: (msg: any) => void;
   private onConnectionChange?: (connected: boolean) => void;
   private onStreamEnded?: () => void;
+  private onFrameReceived?: (dataUrl: string) => void;
 
   constructor(roomId: string, isSender: boolean) {
     this.roomId = roomId;
@@ -31,12 +32,14 @@ export class WebRtcEngine {
     onRemoteStream?: (stream: MediaStream) => void,
     onDataMessage?: (msg: any) => void,
     onConnectionChange?: (connected: boolean) => void,
-    onStreamEnded?: () => void
+    onStreamEnded?: () => void,
+    onFrameReceived?: (dataUrl: string) => void
   ) {
     this.onRemoteStream = onRemoteStream;
     this.onDataMessage = onDataMessage;
     this.onConnectionChange = onConnectionChange;
     this.onStreamEnded = onStreamEnded;
+    this.onFrameReceived = onFrameReceived;
 
     const peerId = this.isSender
       ? `tb-agent-${this.roomId}`
@@ -133,6 +136,10 @@ export class WebRtcEngine {
           }
           return;
         }
+        if (parsed?.type === 'mirror-frame' && typeof parsed.dataUrl === 'string') {
+          this.onFrameReceived?.(parsed.dataUrl);
+          return;
+        }
         if (this.onDataMessage) {
           this.onDataMessage(parsed);
         }
@@ -143,6 +150,10 @@ export class WebRtcEngine {
   public async startCaptureAndOffer(): Promise<MediaStream | null> {
     if (!this.isSender || !this.peer) return null;
     try {
+      if (this.localStream) {
+        this.localStream.getTracks().forEach((t) => t.stop());
+        this.localStream = null;
+      }
       const md = navigator.mediaDevices as MediaDevices & {
         getDisplayMedia?: (constraints: MediaStreamConstraints) => Promise<MediaStream>;
       };
@@ -175,6 +186,79 @@ export class WebRtcEngine {
     } catch {
       return null;
     }
+  }
+
+  public async startCameraCaptureAndOffer(
+    facingMode: 'user' | 'environment' = 'user'
+  ): Promise<MediaStream | null> {
+    if (!this.isSender || !this.peer) return null;
+    try {
+      if (this.localStream) {
+        this.localStream.getTracks().forEach((t) => t.stop());
+        this.localStream = null;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: facingMode },
+          width: { ideal: 720 },
+          height: { ideal: 1280 },
+        },
+        audio: false,
+      });
+      this.localStream = stream;
+
+      const [videoTrack] = this.localStream.getVideoTracks();
+      if (videoTrack) {
+        videoTrack.onended = () => {
+          this.localStream = null;
+          this.onStreamEnded?.();
+        };
+      }
+      if (this.peer && this.remoteControllerPeerId) {
+        this.activeCall?.close();
+        this.activeCall = this.peer.call(this.remoteControllerPeerId, this.localStream);
+      }
+
+      return this.localStream;
+    } catch {
+      return null;
+    }
+  }
+
+  public startProvidedStreamOffer(stream: MediaStream): MediaStream {
+    if (this.localStream && this.localStream !== stream) {
+      this.localStream.getTracks().forEach((t) => t.stop());
+    }
+    this.localStream = stream;
+    const [videoTrack] = stream.getVideoTracks();
+    if (videoTrack) {
+      videoTrack.onended = () => {
+        if (this.localStream === stream) {
+          this.localStream = null;
+          this.onStreamEnded?.();
+        }
+      };
+    }
+    if (this.isSender && this.peer && this.remoteControllerPeerId) {
+      this.activeCall?.close();
+      this.activeCall = this.peer.call(this.remoteControllerPeerId, stream);
+    }
+    return stream;
+  }
+
+  public stopLocalStream() {
+    if (this.activeCall) {
+      this.activeCall.close();
+      this.activeCall = null;
+    }
+    if (this.localStream) {
+      this.localStream.getTracks().forEach((t) => t.stop());
+      this.localStream = null;
+    }
+  }
+
+  public sendMirrorFrame(dataUrl: string): boolean {
+    return this.sendData({ type: 'mirror-frame', dataUrl });
   }
 
   public sendData(data: any): boolean {
