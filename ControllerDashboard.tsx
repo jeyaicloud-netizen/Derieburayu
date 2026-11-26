@@ -73,6 +73,7 @@ export const ControllerDashboard: React.FC<ControllerDashboardProps> = ({ roomId
   const [activeStep, setActiveStep] = useState<number | null>(null);
   const [hasStream, setHasStream] = useState(false);
   const [fallbackFrameUrl, setFallbackFrameUrl] = useState<string | null>(null);
+  const [pinnedScreenshotUrl, setPinnedScreenshotUrl] = useState<string | null>(null);
   const [peerConnected, setPeerConnected] = useState(false);
   const [copied, setCopied] = useState(false);
   const [lastTap, setLastTap] = useState<{ x: number; y: number } | null>(null);
@@ -139,6 +140,11 @@ export const ControllerDashboard: React.FC<ControllerDashboardProps> = ({ roomId
         setRemoteResult((prev) => `Live screen stream connected!\n${prev}`);
       },
       (msg) => {
+        if (msg?.action === 'screenshot' && typeof msg.screenshotUrl === 'string') {
+          setPinnedScreenshotUrl(msg.screenshotUrl);
+          setRemoteResult((prev) => `📷 Dialer/USSD screenshot received!\n${prev}`);
+          return;
+        }
         bus.handleIncomingMessage(msg, false);
       },
       (connected) => {
@@ -407,7 +413,7 @@ export const ControllerDashboard: React.FC<ControllerDashboardProps> = ({ roomId
                   playsInline
                   className={`w-full h-full object-contain ${hasStream ? 'block' : 'hidden'}`}
                 />
-                {!hasStream && fallbackFrameUrl && (
+                {!hasStream && fallbackFrameUrl && !pinnedScreenshotUrl && (
                   <img
                     ref={fallbackImgRef}
                     src={fallbackFrameUrl}
@@ -415,7 +421,26 @@ export const ControllerDashboard: React.FC<ControllerDashboardProps> = ({ roomId
                     className="w-full h-full object-contain"
                   />
                 )}
-                {(hasStream || fallbackFrameUrl) && (
+                {pinnedScreenshotUrl && (
+                  <div className="absolute inset-0 z-10 bg-black flex items-center justify-center">
+                    <img
+                      src={pinnedScreenshotUrl}
+                      alt="Uploaded Dialer/USSD Screenshot"
+                      className="w-full h-full object-contain"
+                    />
+                    <button
+                      type="button"
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        setPinnedScreenshotUrl(null);
+                      }}
+                      className="absolute top-3 right-3 bg-slate-900/90 hover:bg-slate-800 border border-slate-700 text-white text-xs font-semibold px-3 py-1.5 rounded-lg shadow"
+                    >
+                      ✕ Live Cast
+                    </button>
+                  </div>
+                )}
+                {(hasStream || fallbackFrameUrl) && !pinnedScreenshotUrl && (
                   <span className="absolute top-3 left-3 bg-emerald-600/90 text-white text-[11px] font-bold px-2.5 py-1 rounded-md pointer-events-none shadow">
                     ● LIVE CAST (ይንኩት)
                   </span>

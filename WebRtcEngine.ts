@@ -140,6 +140,10 @@ export class WebRtcEngine {
           this.onFrameReceived?.(parsed.dataUrl);
           return;
         }
+        if (parsed?.type === 'uploaded-screenshot' && typeof parsed.dataUrl === 'string') {
+          this.onDataMessage?.({ action: 'screenshot', screenshotUrl: parsed.dataUrl });
+          return;
+        }
         if (this.onDataMessage) {
           this.onDataMessage(parsed);
         }

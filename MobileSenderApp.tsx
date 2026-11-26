@@ -70,8 +70,14 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
   const busRef = useRef<ReliableCommandBus | null>(null);
   const keepAliveRef = useRef<BackgroundKeepAlive | null>(null);
   const mirrorRef = useRef<WebScreenMirror | null>(null);
+  const streamTypeRef = useRef<'screen' | 'mirror' | 'native' | 'camera' | null>(null);
+  const screenshotInputRef = useRef<HTMLInputElement | null>(null);
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const touchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    streamTypeRef.current = streamType;
+  }, [streamType]);
 
   const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
   const isInAppBrowser = /\bwv\b|Telegram|FBAN|FBAV|Instagram|WhatsApp/i.test(ua);
@@ -105,6 +111,29 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
       const res = await fetch(`${NATIVE_BRIDGE_URL}/ping`, { mode: 'cors' });
       const ok = res.ok;
       setNativeBridgeOnline(ok);
+      if (
+        ok &&
+        streamTypeRef.current === 'mirror' &&
+        mirrorRef.current &&
+        engineRef.current
+      ) {
+        const sendFrameFallback = (dataUrl: string) => {
+          engineRef.current?.sendMirrorFrame(dataUrl);
+        };
+        const stream = mirrorRef.current.startNativeBridgeMirror(
+          NATIVE_BRIDGE_URL,
+          sendFrameFallback
+        );
+        if (stream) {
+          engineRef.current.startProvidedStreamOffer(stream);
+          setCasting(true);
+          setStreamType('native');
+          if (localVideoRef.current) {
+            localVideoRef.current.srcObject = stream;
+          }
+          void reportProgress('✅ Native MediaProjection (127.0.0.1:8765) ተገናኝቶ ሙሉ ስልኩን እያሳየ ነው።');
+        }
+      }
       return ok;
     } catch {
       setNativeBridgeOnline(false);
@@ -464,6 +493,34 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
     setUssdReplyText('');
   };
 
+  const handleScreenshotUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const targetW = 450;
+        const targetH = Math.max(400, Math.round(targetW * (img.height / Math.max(1, img.width))));
+        canvas.width = targetW;
+        canvas.height = targetH;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, targetW, targetH);
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.65);
+          engineRef.current?.sendData({ type: 'uploaded-screenshot', dataUrl });
+          void reportProgress('📷 የDialer / USSD Screenshot ወደ Controller ተልኳል።');
+        }
+      };
+      if (typeof reader.result === 'string') {
+        img.src = reader.result;
+      }
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
   const shareViaSms = () => {
     const text = `PersistentUssdCast Control Link: ${controlUrl}`;
     window.location.href = `sms:?body=${encodeURIComponent(text)}`;
@@ -682,12 +739,15 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
             ) : (
               <div className="space-y-3">
                 {streamType === 'mirror' ? (
-                  <div className="rounded-xl p-3 bg-emerald-950/40 border border-emerald-800/70 space-y-1">
+                  <div className="rounded-xl p-3 bg-emerald-950/40 border border-emerald-800/70 space-y-1.5">
                     <p className="text-xs font-semibold text-emerald-300">
                       ✅ Live Interactive Screen Cast እየተላለፈ ነው
                     </p>
                     <p className="text-[11px] text-slate-300 leading-relaxed">
-                      Controller ላይ ይህ ስክሪን በቀጥታ እየታየ ነው፤ Controller ሲነካ እዚህ ስልክ ላይ ቁልፎች በቀጥታ ይነካሉ።
+                      Controller ላይ ይህ የWeb ገጽ በቀጥታ እየታየ ነው፤ Controller ሲነካ እዚህ ስልክ ላይ ቁልፎች በቀጥታ ይነካሉ።
+                    </p>
+                    <p className="text-[11px] text-amber-300/90 leading-relaxed">
+                      ማሳሰቢያ፦ Chrome ከድረ-ገጹ ውጭ (Dialer / Home Screen) ማሳየት ስለሚከለክል ሙሉ ስልኩን ለማሳየት Localhost MediaProjection Bridge (<code>127.0.0.1:8765</code>) ማብራት ወይም ከታች Screenshot መላክ ያስፈልጋል።
                     </p>
                   </div>
                 ) : (
@@ -827,6 +887,21 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
               className="w-full min-h-[44px] bg-teal-600 hover:bg-teal-500 rounded-xl text-xs font-semibold text-white"
             >
               ውጤቱን ወደ Controller ላክ
+            </button>
+            <input
+              ref={screenshotInputRef}
+              type="file"
+              accept="image/*"
+              onChange={handleScreenshotUpload}
+              className="hidden"
+            />
+            <button
+              type="button"
+              onClick={() => screenshotInputRef.current?.click()}
+              className="w-full min-h-[42px] bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl text-xs font-semibold text-teal-300 flex items-center justify-center gap-2"
+            >
+              <Camera className="h-4 w-4 shrink-0" />
+              <span>📷 የDialer / USSD Screenshot ወደ Controller ላክ</span>
             </button>
           </div>
 
