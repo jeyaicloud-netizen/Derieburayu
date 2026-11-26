@@ -14,6 +14,9 @@ export class ReliableCommandBus {
   private onCommandReceived?: (msg: BridgeMessage) => void;
   private onAckReceived?: (cmdId: string) => void;
   private eventSource: EventSource | null = null;
+  private webSocket: WebSocket | null = null;
+  private wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private destroyed = false;
 
   constructor(
     roomId: string,
@@ -25,26 +28,86 @@ export class ReliableCommandBus {
     this.onAckReceived = onAckReceived;
   }
 
-  private handleResume = () => {
+  private handleEnvelopeText(raw: string) {
+    try {
+      const env = JSON.parse(raw);
+      if (env.event === 'message' && typeof env.message === 'string') {
+        const msg: BridgeMessage = JSON.parse(env.message);
+        this.handleIncomingMessage(msg, true);
+      }
+    } catch {}
+  }
+
+  private connectWebSocket() {
+    if (this.destroyed || typeof WebSocket === 'undefined') return;
     if (
-      typeof document !== 'undefined' &&
-      document.visibilityState === 'visible' &&
-      (!this.eventSource || this.eventSource.readyState === EventSource.CLOSED)
+      this.webSocket &&
+      (this.webSocket.readyState === WebSocket.OPEN ||
+        this.webSocket.readyState === WebSocket.CONNECTING)
     ) {
-      this.startListening();
+      return;
+    }
+    try {
+      const wsBase = BRIDGE_CONFIG.ntfyBaseUrl.replace(/^http/i, 'ws');
+      const wsUrl = `${wsBase}/tinybridge_v1_${this.roomId}/ws`;
+      const ws = new WebSocket(wsUrl);
+      this.webSocket = ws;
+      ws.onmessage = (event) => {
+        if (typeof event.data === 'string') {
+          this.handleEnvelopeText(event.data);
+        }
+      };
+      ws.onclose = () => {
+        if (this.webSocket === ws) {
+          this.webSocket = null;
+        }
+        if (!this.destroyed) {
+          if (this.wsReconnectTimer) clearTimeout(this.wsReconnectTimer);
+          this.wsReconnectTimer = setTimeout(() => {
+            this.connectWebSocket();
+          }, 1800);
+        }
+      };
+      ws.onerror = () => {
+        try {
+          ws.close();
+        } catch {}
+      };
+    } catch {}
+  }
+
+  private connectSse() {
+    if (this.destroyed || typeof EventSource === 'undefined') return;
+    if (this.eventSource && this.eventSource.readyState !== EventSource.CLOSED) {
+      return;
+    }
+    const sseUrl = `${BRIDGE_CONFIG.ntfyBaseUrl}/tinybridge_v1_${this.roomId}/sse`;
+    try {
+      this.eventSource = new EventSource(sseUrl);
+      this.eventSource.onmessage = (event) => {
+        if (typeof event.data === 'string') {
+          this.handleEnvelopeText(event.data);
+        }
+      };
+    } catch {}
+  }
+
+  private handleResume = () => {
+    if (this.destroyed) return;
+    if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+      this.connectWebSocket();
+      this.connectSse();
     }
   };
 
   private handleOnline = () => {
-    if (!this.eventSource || this.eventSource.readyState === EventSource.CLOSED) {
-      this.startListening();
-    }
+    if (this.destroyed) return;
+    this.connectWebSocket();
+    this.connectSse();
   };
 
   public startListening() {
-    if (this.eventSource) {
-      this.eventSource.close();
-    }
+    this.destroyed = false;
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', this.handleResume);
       document.addEventListener('visibilitychange', this.handleResume);
@@ -52,20 +115,13 @@ export class ReliableCommandBus {
     if (typeof window !== 'undefined') {
       window.removeEventListener('online', this.handleOnline);
       window.addEventListener('online', this.handleOnline);
+      window.removeEventListener('focus', this.handleResume);
+      window.addEventListener('focus', this.handleResume);
+      window.removeEventListener('pageshow', this.handleResume);
+      window.addEventListener('pageshow', this.handleResume);
     }
-    const sseUrl = `${BRIDGE_CONFIG.ntfyBaseUrl}/tinybridge_v1_${this.roomId}/sse`;
-    try {
-      this.eventSource = new EventSource(sseUrl);
-      this.eventSource.onmessage = (event) => {
-        try {
-          const env = JSON.parse(event.data);
-          if (env.event === 'message' && typeof env.message === 'string') {
-            const msg: BridgeMessage = JSON.parse(env.message);
-            this.handleIncomingMessage(msg, true);
-          }
-        } catch {}
-      };
-    } catch {}
+    this.connectWebSocket();
+    this.connectSse();
   }
 
   public handleIncomingMessage(msg: BridgeMessage, sendAckBack = true) {
@@ -169,11 +225,24 @@ export class ReliableCommandBus {
   }
 
   public destroy() {
+    this.destroyed = true;
+    if (this.wsReconnectTimer) {
+      clearTimeout(this.wsReconnectTimer);
+      this.wsReconnectTimer = null;
+    }
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', this.handleResume);
     }
     if (typeof window !== 'undefined') {
       window.removeEventListener('online', this.handleOnline);
+      window.removeEventListener('focus', this.handleResume);
+      window.removeEventListener('pageshow', this.handleResume);
+    }
+    if (this.webSocket) {
+      try {
+        this.webSocket.close();
+      } catch {}
+      this.webSocket = null;
     }
     if (this.eventSource) {
       this.eventSource.close();

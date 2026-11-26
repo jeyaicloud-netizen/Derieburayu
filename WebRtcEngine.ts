@@ -15,6 +15,7 @@ export class WebRtcEngine {
   private remoteControllerPeerId: string | null = null;
   private reconnectTimer: ReturnType<typeof setInterval> | null = null;
   private destroyed = false;
+  private streamReceived = false;
   private roomId: string;
   private isSender: boolean;
   private onRemoteStream?: (stream: MediaStream) => void;
@@ -58,10 +59,13 @@ export class WebRtcEngine {
         this.connectToSender();
         if (this.reconnectTimer) clearInterval(this.reconnectTimer);
         this.reconnectTimer = setInterval(() => {
-          if (!this.destroyed && (!this.conn || !this.conn.open)) {
+          if (this.destroyed) return;
+          if (!this.conn || !this.conn.open) {
             this.connectToSender();
+          } else if (!this.streamReceived && this.peer?.id) {
+            this.sendData({ type: 'request-stream', peerId: this.peer.id });
           }
-        }, 3000);
+        }, 3500);
       }
     });
 
@@ -91,6 +95,7 @@ export class WebRtcEngine {
         call.answer();
       }
       call.on('stream', (stream) => {
+        this.streamReceived = true;
         if (this.onRemoteStream) {
           this.onRemoteStream(stream);
         }

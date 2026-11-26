@@ -17,6 +17,21 @@ export class BackgroundKeepAlive {
   private worker: Worker | null = null;
   private workerUrl: string | null = null;
   private active = false;
+  private bannerLine1 = 'UssdCast Live';
+  private bannerLine2 = 'Ready on Dialer / BG';
+  private onFloatingAction?: (action: 'prev' | 'next' | 'toggle') => void;
+  private docPipWindow: Window | null = null;
+
+  public setBannerText(line1: string, line2 = '') {
+    this.bannerLine1 = line1.slice(0, 26);
+    this.bannerLine2 = line2.slice(0, 32);
+    if (this.docPipWindow && !this.docPipWindow.closed) {
+      const l1 = this.docPipWindow.document.getElementById('pip-l1');
+      const l2 = this.docPipWindow.document.getElementById('pip-l2');
+      if (l1) l1.textContent = this.bannerLine1;
+      if (l2) l2.textContent = this.bannerLine2 || 'Active in Background';
+    }
+  }
 
   private handleVisibilityChange = () => {
     if (!this.active) return;
@@ -31,7 +46,10 @@ export class BackgroundKeepAlive {
     }
   };
 
-  public async activate() {
+  public async activate(onFloatingAction?: (action: 'prev' | 'next' | 'toggle') => void) {
+    if (onFloatingAction) {
+      this.onFloatingAction = onFloatingAction;
+    }
     this.active = true;
     document.removeEventListener('visibilitychange', this.handleVisibilityChange);
     document.addEventListener('visibilitychange', this.handleVisibilityChange);
@@ -79,32 +97,90 @@ export class BackgroundKeepAlive {
             void this.videoEl.play().catch(() => {});
           }
           navigator.mediaSession.playbackState = 'playing';
+          this.onFloatingAction?.('toggle');
         });
         navigator.mediaSession.setActionHandler('pause', () => {
           navigator.mediaSession.playbackState = 'playing';
+          this.onFloatingAction?.('toggle');
+        });
+        navigator.mediaSession.setActionHandler('previoustrack', () => {
+          navigator.mediaSession.playbackState = 'playing';
+          this.onFloatingAction?.('prev');
+        });
+        navigator.mediaSession.setActionHandler('nexttrack', () => {
+          navigator.mediaSession.playbackState = 'playing';
+          this.onFloatingAction?.('next');
         });
       } catch {}
     }
 
-    // 3. Auto Picture-in-Picture (PiP) canvas heartbeater
+    // 3A. Interactive Document Picture-in-Picture (where supported, e.g. Desktop Chromium)
+    try {
+      const docPip = (window as Window & {
+        documentPictureInPicture?: {
+          requestWindow: (opts: { width: number; height: number }) => Promise<Window>;
+        };
+      }).documentPictureInPicture;
+      if (docPip && (!this.docPipWindow || this.docPipWindow.closed)) {
+        const pipWin = await docPip.requestWindow({ width: 300, height: 220 });
+        this.docPipWindow = pipWin;
+        pipWin.document.body.style.cssText =
+          'margin:0;padding:12px;background:#020617;color:#f1f5f9;font-family:system-ui,sans-serif;display:flex;flex-direction:column;gap:8px;';
+        pipWin.document.body.innerHTML = `
+          <div style="font-size:11px;font-weight:700;color:#2dd4bf;">● USSDCAST FLOATING</div>
+          <div id="pip-l1" style="font-size:15px;font-weight:700;color:#fff;"></div>
+          <div id="pip-l2" style="font-size:12px;color:#fbbf24;"></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px;">
+            <button id="pip-prev" style="padding:10px;border:none;border-radius:8px;background:#0f766e;color:#fff;font-weight:700;cursor:pointer;">📞 Dial / Paste</button>
+            <button id="pip-next" style="padding:10px;border:none;border-radius:8px;background:#059669;color:#fff;font-weight:700;cursor:pointer;">✅ Done (Send)</button>
+          </div>
+          <button id="pip-toggle" style="padding:8px;border:1px solid #334155;border-radius:8px;background:#0f172a;color:#cbd5e1;font-size:12px;font-weight:600;cursor:pointer;">🔔 Ping Controller</button>
+        `;
+        const l1 = pipWin.document.getElementById('pip-l1');
+        const l2 = pipWin.document.getElementById('pip-l2');
+        if (l1) l1.textContent = this.bannerLine1;
+        if (l2) l2.textContent = this.bannerLine2 || 'Active in Background';
+        pipWin.document.getElementById('pip-prev')?.addEventListener('click', () => {
+          this.onFloatingAction?.('prev');
+        });
+        pipWin.document.getElementById('pip-next')?.addEventListener('click', () => {
+          this.onFloatingAction?.('next');
+        });
+        pipWin.document.getElementById('pip-toggle')?.addEventListener('click', () => {
+          this.onFloatingAction?.('toggle');
+        });
+      }
+    } catch {}
+
+    // 3B. Android Video Picture-in-Picture (PiP) Interactive MediaSession Controls
     try {
       if (!this.canvasEl) {
         this.canvasEl = document.createElement('canvas');
-        this.canvasEl.width = 300;
-        this.canvasEl.height = 160;
+        this.canvasEl.width = 320;
+        this.canvasEl.height = 180;
       }
       const ctx = this.canvasEl.getContext('2d');
       if (ctx) {
         if (this.canvasTimer) clearInterval(this.canvasTimer);
         const drawFrame = () => {
+          ctx.fillStyle = '#020617';
+          ctx.fillRect(0, 0, 320, 180);
           ctx.fillStyle = '#0f172a';
-          ctx.fillRect(0, 0, 300, 160);
+          ctx.fillRect(8, 8, 304, 164);
           ctx.fillStyle = '#2dd4bf';
-          ctx.font = 'bold 20px sans-serif';
-          ctx.fillText('UssdCast Background', 36, 72);
+          ctx.font = 'bold 12px monospace';
+          ctx.fillText('● USSDCAST FLOATING', 18, 30);
+          ctx.fillStyle = '#ffffff';
+          ctx.font = 'bold 18px sans-serif';
+          ctx.fillText(this.bannerLine1, 18, 66);
+          ctx.fillStyle = '#fbbf24';
+          ctx.font = 'bold 14px sans-serif';
+          ctx.fillText(this.bannerLine2 || 'Active in Background', 18, 96);
+          ctx.fillStyle = '#1e293b';
+          ctx.fillRect(14, 122, 292, 36);
           ctx.fillStyle = '#e2e8f0';
-          ctx.font = '14px monospace';
-          ctx.fillText(new Date().toLocaleTimeString(), 96, 108);
+          ctx.font = 'bold 12px sans-serif';
+          ctx.fillText('⏮ Dial/Paste   ⏯ Ping   ⏭ Done', 24, 144);
         };
         drawFrame();
         this.canvasTimer = setInterval(drawFrame, 1000);
@@ -180,6 +256,12 @@ export class BackgroundKeepAlive {
     if (this.canvasTimer) {
       clearInterval(this.canvasTimer);
       this.canvasTimer = null;
+    }
+    if (this.docPipWindow && !this.docPipWindow.closed) {
+      try {
+        this.docPipWindow.close();
+      } catch {}
+      this.docPipWindow = null;
     }
     if (document.pictureInPictureElement === this.videoEl) {
       void document.exitPictureInPicture().catch(() => {});

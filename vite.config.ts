@@ -7,6 +7,7 @@ import {VitePWA} from 'vite-plugin-pwa';
 
 const ROOT_STATIC_ASSETS: Record<string, string> = {
   'manifest.json': 'application/manifest+json; charset=utf-8',
+  'sw-actions.js': 'application/javascript; charset=utf-8',
   'icon.svg': 'image/svg+xml',
   'apple-touch-icon.png': 'image/png',
   'pwa-192x192.png': 'image/png',
@@ -96,8 +97,24 @@ export default defineConfig(() => {
               purpose: 'maskable',
             },
           ],
+          share_target: {
+            action: '/share-target',
+            method: 'POST',
+            enctype: 'multipart/form-data',
+            params: {
+              title: 'title',
+              text: 'text',
+              files: [
+                {
+                  name: 'media',
+                  accept: ['image/*'],
+                },
+              ],
+            },
+          },
         },
         workbox: {
+          importScripts: ['/sw-actions.js'],
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2,json}'],
           navigateFallbackDenylist: [/^\/api\//, /^\/\.well-known\//],
           runtimeCaching: [

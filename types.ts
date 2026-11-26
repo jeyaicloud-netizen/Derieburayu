@@ -22,6 +22,7 @@ export interface BridgeMessage {
     | 'ack';
   text?: string;
   code?: string;
+  url?: string;
   label?: string;
   step?: number;
   enabled?: boolean;

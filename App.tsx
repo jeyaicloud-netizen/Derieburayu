@@ -15,12 +15,15 @@ export function App() {
   useEffect(() => {
     const handleHashChange = () => {
       const hash = window.location.hash;
+      const searchParams = new URLSearchParams(window.location.search);
       const params = new URLSearchParams(hash.replace(/^#/, ''));
       const m = params.get('mode');
       const r = params.get('room');
 
       if (m === 'sender' || m === 'control') {
         setMode(m);
+      } else if (searchParams.get('shared') === '1') {
+        setMode('sender');
       }
       if (r && r.length >= 6) {
         setRoomId(r);

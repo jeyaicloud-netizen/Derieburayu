@@ -298,7 +298,7 @@ export class WebScreenMirror {
     if (typeof document === 'undefined') return null;
 
     const canvas = document.createElement('canvas');
-    canvas.width = 450;
+    canvas.width = 400;
     canvas.height = 800;
     this.canvas = canvas;
     const ctx = canvas.getContext('2d');
@@ -315,6 +315,16 @@ export class WebScreenMirror {
       img.crossOrigin = 'anonymous';
       img.onload = () => {
         if (this.active && this.canvas) {
+          if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+            const maxDim = 800;
+            const ratio = img.naturalWidth / img.naturalHeight;
+            const targetW = ratio >= 1 ? maxDim : Math.max(240, Math.round(maxDim * ratio));
+            const targetH = ratio >= 1 ? Math.max(240, Math.round(maxDim / ratio)) : maxDim;
+            if (this.canvas.width !== targetW || this.canvas.height !== targetH) {
+              this.canvas.width = targetW;
+              this.canvas.height = targetH;
+            }
+          }
           const c = this.canvas.getContext('2d');
           if (c) {
             c.drawImage(img, 0, 0, this.canvas.width, this.canvas.height);

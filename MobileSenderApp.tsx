@@ -66,11 +66,18 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
     label: string;
   } | null>(null);
 
+  const [showDialer, setShowDialer] = useState(false);
+  const [dialerDigits, setDialerDigits] = useState('*804#');
+  const [pendingUrlCall, setPendingUrlCall] = useState<{ url: string; label: string } | null>(
+    null
+  );
   const engineRef = useRef<WebRtcEngine | null>(null);
   const busRef = useRef<ReliableCommandBus | null>(null);
   const keepAliveRef = useRef<BackgroundKeepAlive | null>(null);
   const mirrorRef = useRef<WebScreenMirror | null>(null);
   const streamTypeRef = useRef<'screen' | 'mirror' | 'native' | 'camera' | null>(null);
+  const activeUssdRef = useRef<string | null>(null);
+  const pendingUrlCallRef = useRef<{ url: string; label: string } | null>(null);
   const screenshotInputRef = useRef<HTMLInputElement | null>(null);
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const touchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -78,6 +85,10 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
   useEffect(() => {
     streamTypeRef.current = streamType;
   }, [streamType]);
+
+  useEffect(() => {
+    activeUssdRef.current = activeUssd;
+  }, [activeUssd]);
 
   const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
   const isInAppBrowser = /\bwv\b|Telegram|FBAN|FBAV|Instagram|WhatsApp/i.test(ua);
@@ -106,6 +117,10 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
     controlUrl
   )}&text=${encodeURIComponent(`PersistentUssdCast Control Link: ${controlUrl}`)}`;
 
+  const launchNativeBridgeHref = `intent://open?room=${encodeURIComponent(
+    roomId
+  )}#Intent;scheme=ussdcast;package=com.ussdcast.bridge;end`;
+
   const checkNativeBridge = async (): Promise<boolean> => {
     try {
       const res = await fetch(`${NATIVE_BRIDGE_URL}/ping`, { mode: 'cors' });
@@ -133,10 +148,53 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
           }
           void reportProgress('✅ Native MediaProjection (127.0.0.1:8765) ተገናኝቶ ሙሉ ስልኩን እያሳየ ነው።');
         }
+      } else if (
+        !ok &&
+        streamTypeRef.current === 'native' &&
+        mirrorRef.current &&
+        engineRef.current
+      ) {
+        const sendFrameFallback = (dataUrl: string) => {
+          engineRef.current?.sendMirrorFrame(dataUrl);
+        };
+        const stream = mirrorRef.current.startDomMirror(
+          '[data-mirror-root="true"]',
+          sendFrameFallback
+        );
+        if (stream) {
+          engineRef.current.startProvidedStreamOffer(stream);
+          setCasting(true);
+          setStreamType('mirror');
+          if (localVideoRef.current) {
+            localVideoRef.current.srcObject = stream;
+          }
+          void reportProgress('⚠️ Native MediaProjection ተቋርጧል፤ ወደ Web Mirror ተመልሷል።');
+        }
       }
       return ok;
     } catch {
       setNativeBridgeOnline(false);
+      if (
+        streamTypeRef.current === 'native' &&
+        mirrorRef.current &&
+        engineRef.current
+      ) {
+        const sendFrameFallback = (dataUrl: string) => {
+          engineRef.current?.sendMirrorFrame(dataUrl);
+        };
+        const stream = mirrorRef.current.startDomMirror(
+          '[data-mirror-root="true"]',
+          sendFrameFallback
+        );
+        if (stream) {
+          engineRef.current.startProvidedStreamOffer(stream);
+          setCasting(true);
+          setStreamType('mirror');
+          if (localVideoRef.current) {
+            localVideoRef.current.srcObject = stream;
+          }
+        }
+      }
       return false;
     }
   };
@@ -181,7 +239,7 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
     void checkNativeBridge();
     const bridgePoll = setInterval(() => {
       void checkNativeBridge();
-    }, 8000);
+    }, 3500);
 
     const keepAlive = new BackgroundKeepAlive();
     keepAliveRef.current = keepAlive;
@@ -217,10 +275,89 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
       void startMirrorStream(true);
     }, 600);
 
+    // Web Share Target intake (Screenshot or USSD text shared via Android Share Sheet)
+    const intakeSharedPayload = async () => {
+      try {
+        const sp = new URLSearchParams(window.location.search);
+        const sharedText = sp.get('sharedText');
+        if (sharedText && sharedText.trim()) {
+          setUssdReplyText(sharedText.trim());
+          setTimeout(() => {
+            void reportProgress(`📩 Shared Text: ${sharedText.trim()}`);
+          }, 900);
+        }
+        if ('caches' in window) {
+          const cache = await caches.open('ussdcast-shared-v1');
+          const matched = await cache.match('/_shared-image');
+          if (matched) {
+            const blob = await matched.blob();
+            await cache.delete('/_shared-image');
+            const reader = new FileReader();
+            reader.onload = () => {
+              const img = new Image();
+              img.onload = () => {
+                const canvas = document.createElement('canvas');
+                const targetW = 450;
+                const targetH = Math.max(
+                  400,
+                  Math.round(targetW * (img.height / Math.max(1, img.width)))
+                );
+                canvas.width = targetW;
+                canvas.height = targetH;
+                const ctx = canvas.getContext('2d');
+                if (ctx) {
+                  ctx.drawImage(img, 0, 0, targetW, targetH);
+                  const dataUrl = canvas.toDataURL('image/jpeg', 0.65);
+                  setTimeout(() => {
+                    engineRef.current?.sendData({ type: 'uploaded-screenshot', dataUrl });
+                    void reportProgress('📷 Shared Screenshot ወደ Controller ተልኳል።');
+                  }, 1200);
+                }
+              };
+              if (typeof reader.result === 'string') {
+                img.src = reader.result;
+              }
+            };
+            reader.readAsDataURL(blob);
+          }
+        }
+        if (sp.has('shared') || sp.has('sharedText')) {
+          window.history.replaceState(null, '', `/#mode=sender&room=${roomId}`);
+        }
+      } catch {}
+    };
+    void intakeSharedPayload();
+
+    const spUrl = new URLSearchParams(window.location.search).get('urlCall');
+    if (spUrl) {
+      void executeUrlCall(spUrl, 'Notification URL Call');
+      window.history.replaceState(null, '', `/#mode=sender&room=${roomId}`);
+    }
+
+    const onSwMessage = (ev: MessageEvent) => {
+      if (ev.data && ev.data.type === 'EXECUTE_URL_CALL' && typeof ev.data.url === 'string') {
+        void executeUrlCall(ev.data.url, 'Background Notification Call');
+      }
+    };
+    navigator.serviceWorker?.addEventListener('message', onSwMessage);
+
+    const onReturnVisible = () => {
+      if (document.visibilityState === 'visible' && pendingUrlCallRef.current) {
+        const queued = pendingUrlCallRef.current;
+        pendingUrlCallRef.current = null;
+        setPendingUrlCall(null);
+        triggerAnchorCall(queued.url);
+        void reportProgress(`🔗 Queued URL Call ተከፍቷል: ${queued.label || queued.url}`);
+      }
+    };
+    document.addEventListener('visibilitychange', onReturnVisible);
+
     return () => {
       clearTimeout(autoCastTimer);
       window.removeEventListener('beforeinstallprompt', onBeforeInstall);
       window.removeEventListener('appinstalled', onInstalled);
+      navigator.serviceWorker?.removeEventListener('message', onSwMessage);
+      document.removeEventListener('visibilitychange', onReturnVisible);
       clearInterval(bridgePoll);
       if (touchTimerRef.current) clearTimeout(touchTimerRef.current);
       mirror.stop();
@@ -241,7 +378,63 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
     }
   };
 
-  const notifyInBackground = async (title: string, body: string) => {
+  const normalizeSafeUrl = (raw: string): string | null => {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    if (/^[#*0-9+]+$/.test(trimmed)) {
+      return `tel:${trimmed.replace(/#/g, '%23')}`;
+    }
+    if (/^(tel:|sms:|mailto:|intent:|https?:|ussdcast:)/i.test(trimmed)) {
+      return trimmed.startsWith('tel:') ? `tel:${trimmed.slice(4).replace(/#/g, '%23')}` : trimmed;
+    }
+    return null;
+  };
+
+  const triggerAnchorCall = (safeUrl: string) => {
+    try {
+      const a = document.createElement('a');
+      a.href = safeUrl;
+      if (/^https?:/i.test(safeUrl)) {
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+      }
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch {}
+  };
+
+  const executeUrlCall = async (rawUrl: string, label?: string) => {
+    const safeUrl = normalizeSafeUrl(rawUrl);
+    if (!safeUrl) {
+      await reportProgress(`⚠️ Invalid URL Call skipped: ${rawUrl}`);
+      return;
+    }
+    const callLabel = label || safeUrl;
+    keepAliveRef.current?.setBannerText('URL Call', callLabel);
+
+    if (document.hidden) {
+      const queued = { url: safeUrl, label: callLabel };
+      pendingUrlCallRef.current = queued;
+      setPendingUrlCall(queued);
+      await notifyInBackground(
+        `📞 URL Call: ${callLabel}`,
+        'ከበስተጀርባ ትዕዛዝ ደርሷል — "📞 Run URL" ይንኩ',
+        safeUrl
+      );
+      await reportProgress(`⏳ Background WebSocket URL Call (${callLabel}) ተቀምጧል (Notification ይንኩ)።`);
+      return;
+    }
+
+    pendingUrlCallRef.current = null;
+    setPendingUrlCall(null);
+    triggerAnchorCall(safeUrl);
+    await notifyInBackground(`🔗 URL Call: ${callLabel}`, `${safeUrl} ተከፍቷል`, safeUrl);
+    await reportProgress(`🔗 URL Call ተከፍቷል: ${safeUrl}`);
+  };
+
+  const notifyInBackground = async (title: string, body: string, actionUrl?: string) => {
     await keepAliveRef.current?.playAttentionTone();
     try {
       navigator.vibrate?.([80, 40, 80]);
@@ -251,11 +444,38 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
       try {
         const reg = await navigator.serviceWorker?.ready;
         if (reg && reg.showNotification) {
-          await reg.showNotification(title, {
-            body,
-            icon: '/pwa-192x192.png',
-            tag: 'ussdcast-bg-cmd',
-          });
+          try {
+            const actions: Array<{
+              action: string;
+              title: string;
+              type?: string;
+              placeholder?: string;
+            }> = [];
+            if (actionUrl) {
+              actions.push({ action: 'run-url', title: '📞 Run URL' });
+            }
+            actions.push(
+              { action: 'reply', type: 'text', title: 'መልስ ላክ', placeholder: 'USSD መልስ...' },
+              { action: 'done', title: '✅ ተከናውኗል' }
+            );
+            const richOptions: NotificationOptions & {
+              actions?: typeof actions;
+            } = {
+              body,
+              icon: '/pwa-192x192.png',
+              tag: 'ussdcast-bg-cmd',
+              data: { roomId, url: actionUrl || '' },
+              actions,
+            };
+            await reg.showNotification(title, richOptions);
+          } catch {
+            await reg.showNotification(title, {
+              body,
+              icon: '/pwa-192x192.png',
+              tag: 'ussdcast-bg-cmd',
+              data: { roomId, url: actionUrl || '' },
+            });
+          }
         } else if (document.hidden) {
           new Notification(title, { body, icon: '/pwa-192x192.png' });
         }
@@ -263,9 +483,40 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
     }
   };
 
+  const handleFloatingPipAction = (action: 'prev' | 'next' | 'toggle') => {
+    void keepAliveRef.current?.playAttentionTone();
+    if (action === 'next') {
+      void reportProgress('✅ [Floating PiP] ተከናውኗል (Done)');
+      keepAliveRef.current?.setBannerText('Sent: Done ✅', activeUssdRef.current || 'Ready');
+    } else if (action === 'prev') {
+      if (pendingUrlCallRef.current) {
+        const queued = pendingUrlCallRef.current;
+        pendingUrlCallRef.current = null;
+        setPendingUrlCall(null);
+        triggerAnchorCall(queued.url);
+        void reportProgress(`🔗 [Floating PiP] ${queued.url}`);
+        return;
+      }
+      const code = activeUssdRef.current || '*804#';
+      void (async () => {
+        try {
+          const clip = await navigator.clipboard?.readText();
+          if (clip && clip.trim()) {
+            setUssdReplyText(clip.trim());
+            await reportProgress(`📋 [Floating PiP] ${clip.trim()}`);
+            return;
+          }
+        } catch {}
+        await executeUssd(code);
+      })();
+    } else {
+      void reportProgress('🔔 [Floating PiP] ስልኩ ንቁ ነው');
+    }
+  };
+
   const ensureBackgroundActive = async () => {
     if (!keepAliveReady && keepAliveRef.current) {
-      await keepAliveRef.current.activate();
+      await keepAliveRef.current.activate(handleFloatingPipAction);
       setKeepAliveReady(true);
     }
     if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
@@ -320,8 +571,22 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
 
     if (msg.action === 'ussd' && msg.code) {
       setActiveUssd(msg.code);
-      executeUssd(msg.code);
-      void notifyInBackground(`USSD ${msg.code}`, 'መደወያው ተከፍቷል — ለመደወል ይንኩ');
+      setDialerDigits(msg.code);
+      setShowDialer(true);
+      keepAliveRef.current?.setBannerText(`USSD: ${msg.code}`, 'Dialer ላይ Call ይንኩ');
+      void executeUssd(msg.code);
+      const telUrl = `tel:${msg.code.replace(/#/g, '%23')}`;
+      void notifyInBackground(
+        `USSD ${msg.code}`,
+        'መደወያው ዝግጁ ነው — "📞 Run URL" ወይም "መልስ ላክ" ይንኩ',
+        telUrl
+      );
+    } else if (msg.action === 'launch') {
+      const targetUrl =
+        msg.url || msg.text || (msg.code ? `tel:${msg.code.replace(/#/g, '%23')}` : '');
+      if (targetUrl) {
+        void executeUrlCall(targetUrl, msg.label);
+      }
     } else if (
       msg.action === 'touch' &&
       msg.touchX !== undefined &&
@@ -329,6 +594,7 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
     ) {
       const label = msg.label || 'እዚህ ይንኩ';
       setTouchPos({ x: msg.touchX, y: msg.touchY, label });
+      keepAliveRef.current?.setBannerText('Controller Pointer', label);
       executeRemoteDomTap(msg.touchX, msg.touchY);
       void forwardToNativeBridge(`/tap?xp=${msg.touchX}&yp=${msg.touchY}`);
       void notifyInBackground('የWeb UI ጥቆማ', label);
@@ -349,8 +615,16 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
     } else if (msg.action === 'edit' && msg.text !== undefined) {
       setUssdReplyText(msg.text);
     } else if (msg.action === 'back') {
+      setGuidedStep(null);
+      setTouchPos(null);
+      setShowInstallHint(false);
       void forwardToNativeBridge('/back');
     } else if (msg.action === 'home') {
+      try {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      } catch {
+        window.scrollTo(0, 0);
+      }
       void forwardToNativeBridge('/home');
     } else if (msg.action === 'autoclick') {
       void forwardToNativeBridge(msg.enabled ? '/start' : '/stop');
@@ -358,10 +632,12 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
       const label = msg.label || 'መመሪያ';
       const text = msg.text || 'የተጠቆመውን ቁልፍ ይንኩ።';
       setGuidedStep({ step: msg.step || 1, label, text });
+      keepAliveRef.current?.setBannerText(`ደረጃ ${msg.step || 1}`, label);
       void notifyInBackground(`ደረጃ ${msg.step || 1}: ${label}`, text);
     } else if (msg.action === 'clear') {
       setGuidedStep(null);
       setTouchPos(null);
+      keepAliveRef.current?.setBannerText('UssdCast Live', 'Ready on Dialer / BG');
     }
   };
 
@@ -391,15 +667,27 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
     );
   };
 
-  const executeUssd = (code: string) => {
+  const executeUssd = async (code: string) => {
     setActiveUssd(code);
+    try {
+      const res = await fetch(`${NATIVE_BRIDGE_URL}/ussd?code=${encodeURIComponent(code)}`, {
+        mode: 'cors',
+      });
+      if (res.ok) {
+        const text = (await res.text()).trim();
+        setNativeBridgeOnline(true);
+        void reportProgress(`✅ Native USSD ${code}: ${text || 'ተልኳል'}`);
+        return;
+      }
+    } catch {}
+
     const a = document.createElement('a');
     a.href = `tel:${code.replace(/#/g, '%23')}`;
     a.style.display = 'none';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    void reportProgress(`📞 USSD ${code} ተጀምሯል።`);
+    void reportProgress(`📞 USSD ${code} በDialer ተጀምሯል።`);
   };
 
   const startMirrorStream = async (silent = false) => {
@@ -735,6 +1023,20 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
                     <span>የጀርባ ካሜራ</span>
                   </button>
                 </div>
+
+                {!nativeBridgeOnline ? (
+                  <a
+                    href={launchNativeBridgeHref}
+                    className="w-full min-h-[42px] rounded-xl bg-indigo-600/90 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center justify-center gap-2 px-4 border border-indigo-400/40"
+                  >
+                    <ExternalLink className="h-4 w-4 shrink-0" />
+                    <span>Open Native MediaProjection (127.0.0.1:8765)</span>
+                  </a>
+                ) : (
+                  <div className="rounded-xl p-2.5 bg-emerald-950/50 border border-emerald-700/60 text-[11px] text-emerald-300 font-medium text-center">
+                    ✅ Android MediaProjection Bridge (127.0.0.1:8765) ተገናኝቷል — Start Screen Cast ይንኩ
+                  </div>
+                )}
               </div>
             ) : (
               <div className="space-y-3">
@@ -841,6 +1143,23 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
             </div>
           )}
 
+          {pendingUrlCall && (
+            <button
+              type="button"
+              onClick={() => {
+                const queued = pendingUrlCall;
+                pendingUrlCallRef.current = null;
+                setPendingUrlCall(null);
+                triggerAnchorCall(queued.url);
+                void reportProgress(`🔗 Queued URL Call ተከፍቷል: ${queued.url}`);
+              }}
+              className="w-full min-h-[46px] rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold flex items-center justify-center gap-2 px-4 shadow"
+            >
+              <ExternalLink className="h-4 w-4 shrink-0" />
+              <span>📞 Run Queued URL: {pendingUrlCall.label}</span>
+            </button>
+          )}
+
           <div
             className={`rounded-xl p-4 border space-y-3 transition-all ${
               guidedStep?.step === 4
@@ -857,30 +1176,101 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
               </span>
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-3 gap-2">
               <button
                 type="button"
                 onClick={() => executeUssd('*804#')}
                 className="min-h-[44px] bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-mono font-bold text-teal-300 border border-slate-700"
               >
-                *804# Balance
+                *804#
               </button>
               <button
                 type="button"
                 onClick={() => executeUssd('*111#')}
                 className="min-h-[44px] bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-mono font-bold text-teal-300 border border-slate-700"
               >
-                *111# Data
+                *111#
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowDialer((p) => !p)}
+                className={`min-h-[44px] rounded-xl text-xs font-semibold border ${
+                  showDialer
+                    ? 'bg-teal-700 text-white border-teal-500'
+                    : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+                }`}
+              >
+                {showDialer ? 'Dialer ዝጋ' : '⌨️ Dialer Pad'}
               </button>
             </div>
 
-            <input
-              type="text"
-              value={ussdReplyText}
-              onChange={(e) => setUssdReplyText(e.target.value)}
-              placeholder="የቴሌኮም USSD መልስ እዚህ ይጻፉ..."
-              className="w-full min-h-[44px] bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-slate-100 text-xs focus:outline-none focus:border-teal-500"
-            />
+            {showDialer && (
+              <div className="rounded-xl p-3 bg-slate-900 border border-slate-800 space-y-2">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={dialerDigits}
+                    onChange={(e) => setDialerDigits(e.target.value)}
+                    className="flex-1 min-h-[38px] bg-slate-950 border border-slate-800 rounded-lg px-3 font-mono text-sm text-teal-300 text-center"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setDialerDigits((d) => d.slice(0, -1))}
+                    className="min-h-[38px] px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200"
+                  >
+                    ⌫
+                  </button>
+                </div>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {['1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#'].map((key) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setDialerDigits((d) => d + key)}
+                      className="min-h-[38px] rounded-lg bg-slate-800 hover:bg-slate-700 font-mono text-sm font-bold text-white"
+                    >
+                      {key}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void executeUssd(dialerDigits)}
+                  className="w-full min-h-[42px] rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold"
+                >
+                  📞 Dial {dialerDigits || '*804#'}
+                </button>
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={ussdReplyText}
+                onChange={(e) => setUssdReplyText(e.target.value)}
+                placeholder="የቴሌኮም USSD መልስ እዚህ ይጻፉ..."
+                className="flex-1 min-h-[44px] bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-slate-100 text-xs focus:outline-none focus:border-teal-500"
+              />
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    const clip = await navigator.clipboard?.readText();
+                    if (clip && clip.trim()) {
+                      setUssdReplyText(clip.trim());
+                      await reportProgress(`📩 ${clip.trim()}`);
+                    } else {
+                      setStatusNotice('Clipboard ባዶ ነው — መጀመሪያ የUSSD መልሱን Copy ያድርጉ።');
+                    }
+                  } catch {
+                    setStatusNotice('Paste ፍቃድ አልተሰጠም — እዚህ ሳጥን ውስጥ በእጅ Paste ያድርጉ።');
+                  }
+                }}
+                className="min-h-[44px] px-3 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl text-xs font-semibold text-teal-300 shrink-0"
+              >
+                📋 Paste & Send
+              </button>
+            </div>
             <button
               type="button"
               onClick={sendUssdReply}
