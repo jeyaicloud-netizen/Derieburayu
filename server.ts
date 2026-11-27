@@ -3,6 +3,8 @@ import http from 'node:http';
 import path from 'node:path';
 import express from 'express';
 
+import * as archiver from 'archiver';
+
 const PORT = 3000;
 
 async function startServer() {
@@ -12,6 +14,24 @@ async function startServer() {
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true });
+  });
+
+  app.get('/api/download-bridge', (_req, res) => {
+    const bridgeDir = path.resolve(process.cwd(), 'android-bridge');
+    if (!fs.existsSync(bridgeDir)) {
+      res.status(404).send('Android bridge directory not found');
+      return;
+    }
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', 'attachment; filename=ussdcast-android-bridge.zip');
+
+    const archive = (archiver as any)('zip', { zlib: { level: 9 } });
+    archive.on('error', (err: Error) => {
+      res.status(500).send({ error: err.message });
+    });
+    archive.pipe(res);
+    archive.directory(bridgeDir, 'android-bridge');
+    archive.finalize();
   });
 
   if (process.env.NODE_ENV !== 'production') {

@@ -1211,6 +1211,14 @@ export const MobileSenderApp: React.FC<MobileSenderAppProps> = ({ roomId }) => {
                       <span>Download Bridge APK (Install anyway)</span>
                     </a>
                   )}
+                  <a
+                    href="/api/download-bridge"
+                    download="ussdcast-android-bridge.zip"
+                    className="w-full min-h-[40px] rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold flex items-center justify-center gap-2 px-4 shadow"
+                  >
+                    <Download className="h-4 w-4 shrink-0" />
+                    <span>📥 Download Android Bridge (.zip)</span>
+                  </a>
                   <p className="text-[11px] text-slate-300 leading-relaxed">
                     APK ሲጫን <strong>More details → Install anyway</strong> ይንኩ፤ Android 13–16 ከሆነ <strong>App Info → ⋮ → Allow restricted settings</strong> ፈቅደው Native App ውስጥ 1 እና 2 ን ይንኩ።
                   </p>
